@@ -8,7 +8,7 @@ import env from '#start/env'
 
 const AuthFinder = withAuthFinder(() => hash.use('scrypt'), {
   uids: ['email'],
-  passwordColumnName: 'password',
+  passwordColumnName: 'passwordHash',
 })
 
 export default class User extends compose(BaseModel, AuthFinder) {
@@ -16,19 +16,19 @@ export default class User extends compose(BaseModel, AuthFinder) {
   declare id: number
 
   @column()
-  declare fullName: string | null
-
-  @column()
   declare email: string
 
-  @column({ serializeAs: null })
-  declare password: string
+  @column({ columnName: 'password_hash', serializeAs: null })
+  declare passwordHash: string
+
+  @column()
+  declare phone: string | null
+
+  @column()
+  declare status: 'pending' | 'active' | 'suspended'
 
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime
-
-  @column.dateTime({ autoCreate: true, autoUpdate: true })
-  declare updatedAt: DateTime | null
 
   static accessTokens = DbAccessTokensProvider.forModel(User, {
     expiresIn: env.get('ACCESS_TOKEN_EXPIRES_IN'),
