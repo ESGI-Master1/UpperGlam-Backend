@@ -2,6 +2,7 @@ import vine from '@vinejs/vine'
 
 export const preRegistrationRequestValidator = vine.compile(
   vine.object({
+    role: vine.enum(['user', 'provider'] as const),
     email: vine.string().trim().email(),
     password: vine.string().minLength(8).maxLength(255),
     phone: vine.string().trim().minLength(6).maxLength(30),

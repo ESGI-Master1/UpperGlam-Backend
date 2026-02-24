@@ -1,4 +1,5 @@
 export interface PreRegisterUserDto {
+  roleId: number
   email: string
   password: string
   phone: string

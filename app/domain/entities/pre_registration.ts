@@ -1,6 +1,7 @@
 export type UserStatus = 'pending' | 'active' | 'suspended'
 
 export interface PreRegistration {
+  roleId: number
   email: string
   passwordHash: string
   phone: string
