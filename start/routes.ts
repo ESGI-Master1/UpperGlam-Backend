@@ -29,6 +29,8 @@ router
     router.get('/auth/me', [AuthController, 'me'])
     router.post('/auth/logout', [AuthController, 'logout'])
   })
-  .use(middleware.auth({
-    guards: ['api'],
-  }))
+  .use(
+    middleware.auth({
+      guards: ['api'],
+    })
+  )
