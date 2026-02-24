@@ -7,9 +7,9 @@ export default class AuthController {
     const payload = await request.validateUsing(registerValidator)
 
     const user = await User.create({
-      fullName: payload.fullName ?? null,
       email: payload.email.toLowerCase(),
-      password: payload.password,
+      passwordHash: payload.password,
+      status: 'pending',
     })
 
     const token = await User.accessTokens.create(user, ['*'], {

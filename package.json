@@ -10,8 +10,13 @@
     "dev": "node ace serve --hmr",
     "test": "node ace test",
     "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
-    "typecheck": "tsc --noEmit"
+    "format:check": "prettier . --check",
+    "typecheck": "tsc --noEmit",
+    "workflow:check": "npm run lint && npm run typecheck && npm run build && npm test",
+    "workflow:fix": "npm run lint:fix && npm run format",
+    "prepare": "husky"
   },
   "imports": {
     "#controllers/*": "./app/controllers/*.js",
@@ -26,6 +31,9 @@
     "#providers/*": "./providers/*.js",
     "#policies/*": "./app/policies/*.js",
     "#abilities/*": "./app/abilities/*.js",
+    "#domain/*": "./app/domain/*.js",
+    "#application/*": "./app/application/*.js",
+    "#infrastructure/*": "./app/infrastructure/*.js",
     "#database/*": "./database/*.js",
     "#start/*": "./start/*.js",
     "#tests/*": "./tests/*.js",
@@ -45,6 +53,7 @@
     "@types/node": "^22.15.18",
     "eslint": "^9.26.0",
     "hot-hook": "^0.4.0",
+    "husky": "^9.1.7",
     "pino-pretty": "^13.0.0",
     "prettier": "^3.5.3",
     "ts-node-maintained": "^10.9.5",

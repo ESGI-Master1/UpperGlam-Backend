@@ -7,12 +7,14 @@ apply: always
 ## ⚠️ CONTEXTE PROJET (OBLIGATOIRE)
 
 Upper Glam est une **plateforme** de mise en relation instantanée entre :
+
 - **Clients** (particuliers) cherchant une prestation beauté rapide, fiable et personnalisée.
 - **Prestataires** (professionnel(le)s indépendants) souhaitant gérer profil, prestations, disponibilités et réservations.
 
 Le backend est un **serveur API principal** en **Node.js + TypeScript + AdonisJS**, avec une **base PostgreSQL**.
 
 Objectifs techniques clés :
+
 - Parcours **mobile-first**, API-first
 - **Architecture hexagonale / clean code** : séparation stricte domaine / application / infrastructure
 - **Scalabilité** via traitements asynchrones (workers / files de messages)
@@ -45,7 +47,9 @@ Le repo **UpperGlam-Backend** contient **uniquement l’API** et ses briques tec
 # 🏗️ ARCHITECTURE (HEXAGONALE) — RÈGLES STRICTES
 
 ## Objectif
+
 Isoler le **domaine** de tout détail technique pour :
+
 - limiter le couplage,
 - faciliter les tests,
 - permettre l’évolution des adaptateurs (DB, paiement, moteurs, etc.).
@@ -93,12 +97,14 @@ Isoler le **domaine** de tout détail technique pour :
 ❌ Aucune autre structure n’est acceptée.
 
 ## Règles de dépendances (sens unique)
+
 - `domain` **ne dépend de rien** (aucun Adonis, aucun Lucid, aucun SDK).
 - `application` dépend de `domain` uniquement.
 - `infrastructure` peut dépendre de `application` + `domain`.
 - `http/controllers` **appelle uniquement** des `useCases` (jamais la DB directement).
 
 ❌ Interdit :
+
 - importer `@ioc:*`, `HttpContext`, `Database`, `Model`, `Queue`, `Mollie SDK`, etc. dans `domain/` ou `application/`.
 
 ---
@@ -106,6 +112,7 @@ Isoler le **domaine** de tout détail technique pour :
 # 📦 DEPENDENCIES — LISTE BLANCHE / LISTE NOIRE
 
 ## Autorisées (si nécessaire)
+
 - AdonisJS (core + modules)
 - PostgreSQL driver / Lucid ORM
 - BullMQ + ioredis (ou équivalent Redis)
@@ -116,6 +123,7 @@ Isoler le **domaine** de tout détail technique pour :
 - Outils tests : Jest (prévu), supertest (si utile)
 
 ## Interdites (par défaut)
+
 - ORMs alternatifs (Prisma, TypeORM, Sequelize)
 - Frameworks non-Adonis (NestJS, Express “from scratch”)
 - Bibliothèques “magiques” de validation non maîtrisées
@@ -123,6 +131,7 @@ Isoler le **domaine** de tout détail technique pour :
 - Ajout de dépendances sans justification en PR
 
 Règle :
+
 > **Toute nouvelle dépendance** doit être justifiée par un ticket + un mini RFC dans `/docs/decisions/NNN-*.md`.
 
 ---
@@ -145,12 +154,14 @@ Tout payload entrant (HTTP, queue, webhook) doit être **validé** avant d’ent
 
 Le produit collecte des données utilisateur (identité, téléphone, localisation, etc.).
 Donc :
+
 - Logs : ❌ jamais de données sensibles en clair.
 - Identifiants / secrets : ❌ jamais committés.
 - Validation : ✅ obligatoire sur toutes les entrées.
 - Auth : tokens/sessions selon Adonis, mais **aucune route sensible** sans garde.
 
 Règles minimales :
+
 - Rate limiting sur routes publiques (inscription, login, recherche publique).
 - Protection webhook Mollie : signature obligatoire.
 - Upload média : contrôle type/taille + scan/validation “métier” (pas juste mimetype).
@@ -160,6 +171,7 @@ Règles minimales :
 # 🧩 MODÈLES MÉTIER & PÉRIMÈTRE MVP (BACKEND)
 
 Le T1 fixe les priorités MVP :
+
 - Préparation infra backend
 - Pré-inscription différenciée (client / professionnel)
 - Recherche simple par tags
@@ -168,6 +180,7 @@ Le T1 fixe les priorités MVP :
 - Ouverture progressive (premiers clients → mars, public → juin)
 
 Règle :
+
 > Le backend doit être **pensé MVP-first**, mais structuré pour accueillir ensuite : ranking avancé, géo, média, services tiers.
 
 ---
@@ -175,16 +188,19 @@ Règle :
 # 🌐 API RULES (HTTP)
 
 ## Convention d’API
+
 - REST JSON (par défaut)
 - Réponses normalisées : `{ data, meta?, error? }`
 - Erreurs : codes HTTP cohérents + message safe + code interne (ex: `UG_AUTH_001`)
 
 ## Controllers (ultra fins)
+
 Un controller :
-1) valide/parse la requête,
-2) map vers un DTO,
-3) appelle un use case,
-4) transforme la sortie via presenter.
+
+1. valide/parse la requête,
+2. map vers un DTO,
+3. appelle un use case,
+4. transforme la sortie via presenter.
 
 ❌ Interdit : SQL/ORM direct, appels Mollie direct, logique métier, logique de ranking, etc. dans controller.
 
@@ -200,6 +216,7 @@ Un controller :
   - contraintes DB (FK, unique, not null) dès que possible.
 
 Règle :
+
 > “Si c’est une règle d’intégrité, elle vit aussi en DB.”
 
 ---
@@ -207,6 +224,7 @@ Règle :
 # 📨 ASYNC / WORKERS (BullMQ)
 
 Les tâches lourdes doivent être asynchrones, notamment :
+
 - optimisation média (FFmpeg/Sharp),
 - indexation Meilisearch,
 - calculs géo (cache de distances/temps si pertinent),
@@ -214,6 +232,7 @@ Les tâches lourdes doivent être asynchrones, notamment :
 - traitement webhooks Mollie (idempotence).
 
 Règles :
+
 - Jobs **idempotents** (rejouables).
 - Retries contrôlés, dead-letter / failed jobs gérés.
 - Pas de job qui touche directement à l’HTTP response (pas de “attendre la queue”).
@@ -225,6 +244,7 @@ Règles :
 Tout service externe = **port** dans `domain/ports` + impl dans `infrastructure/integrations/*`.
 
 Exemples :
+
 - `PaymentGateway` (Mollie)
 - `SearchIndex` (Meilisearch)
 - `GeoRouting` (OSRM)
@@ -240,6 +260,7 @@ Exemples :
 Prévu dans le T1 : tests unitaires Jest + CI GitHub Actions.
 
 ## Règles
+
 - Le **domaine** doit être testable sans DB.
 - Minimum requis :
   - unit tests sur use cases critiques (booking, paiement, inscription),
@@ -247,7 +268,9 @@ Prévu dans le T1 : tests unitaires Jest + CI GitHub Actions.
   - tests webhook Stripe (signature + idempotence).
 
 ## CI (obligatoire dès que possible)
+
 Pipeline minimal :
+
 - lint
 - typecheck
 - tests
@@ -281,18 +304,21 @@ Pipeline minimal :
 # 🚫 PROHIBITIONS ABSOLUES
 
 ❌ Mettre de la logique métier dans :
+
 - controllers,
 - models Lucid,
 - migrations,
 - jobs “fourre-tout”.
 
 ❌ Coupler le domaine à :
+
 - Adonis Container / IoC
 - Lucid Models
 - Stripe/Meilisearch SDK
 - Redis/BullMQ
 
 ❌ Ignorer les risques identifiés :
+
 - surcharge serveur si traitements lourds centralisés,
 - latence sur recherche/médias,
 - failles via services externes.
@@ -302,9 +328,10 @@ Pipeline minimal :
 # 🎯 OBJECTIF FINAL (BACKEND)
 
 Le backend doit être :
+
 - **Lisible**
 - **Testable**
 - **Évolutif**
 - **Robuste**
 - **Sécurisé**
-- Prêt à intégrer progressivement recherche avancée, géo, média, paiement, tracking **sans refonte globale**. 
+- Prêt à intégrer progressivement recherche avancée, géo, média, paiement, tracking **sans refonte globale**.
