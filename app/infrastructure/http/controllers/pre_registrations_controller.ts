@@ -8,12 +8,14 @@ import { LucidRoleRepository } from '#infrastructure/db/repositories/lucid_role_
 import { preRegistrationRequestValidator } from '#infrastructure/http/requests/pre_registration_request'
 import { presentPreRegistrationResult } from '#infrastructure/http/presenters/pre_registration_presenter'
 import { AdonisPasswordHasher } from '#infrastructure/integrations/security/adonis_password_hasher'
+import { ResendMailSender } from '#infrastructure/integrations/mail/resend_mail_sender'
 
 const repository = new LucidPreRegistrationRepository()
 const roleRepository = new LucidRoleRepository()
 const passwordHasher = new AdonisPasswordHasher()
+const mailSender = new ResendMailSender()
 const resolveRoleIdUseCase = new ResolveRoleIdUseCase(roleRepository)
-const preRegisterUserUseCase = new PreRegisterUserUseCase(repository, passwordHasher)
+const preRegisterUserUseCase = new PreRegisterUserUseCase(repository, passwordHasher, mailSender)
 
 export default class PreRegistrationsController {
   async store({ request, response }: HttpContext) {
