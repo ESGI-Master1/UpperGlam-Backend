@@ -1,0 +1,94 @@
+name: PR Conventions
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: PR Title Convention
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate semantic PR title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          requireScope: false
+          types: |
+            feat
+            fix
+            chore
+            docs
+            refactor
+            test
+            ci
+            build
+            perf
+            style
+            revert
+
+  branch-name:
+    name: Branch Name Convention
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate branch name
+        run: |
+          BRANCH_NAME="${{ github.head_ref }}"
+          if [[ "$BRANCH_NAME" =~ ^(feat|fix|chore|docs|refactor|test|ci|hotfix|release)\/[a-z0-9._-]+$ ]]; then
+            echo "Branch name convention ok: $BRANCH_NAME"
+            exit 0
+          fi
+
+          echo "::error title=Branch name convention::Nom de branche invalide: '$BRANCH_NAME'."
+          echo "::error::Format attendu: type/description (ex: feat/search-keyboard-fix)."
+          echo "::error::Types autorises: feat, fix, chore, docs, refactor, test, ci, hotfix, release."
+          exit 1
+
+  commit-messages:
+    name: Commit Message Convention
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate conventional commits in PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+            const conventionalCommitPattern = /^(feat|fix|chore|docs|refactor|test|ci|build|perf|style|revert)(\([a-z0-9._/-]+\))?!?: .+/;
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner,
+              repo,
+              pull_number,
+              per_page: 100
+            });
+
+            const invalidCommits = commits
+              .map((item) => ({
+                sha: item.sha.slice(0, 7),
+                message: item.commit.message.split("\n")[0]
+              }))
+              .filter((item) => !conventionalCommitPattern.test(item.message));
+
+            if (invalidCommits.length > 0) {
+              core.error("Conventional commit requis pour tous les commits de la PR.");
+              invalidCommits.forEach((item) => {
+                core.error(`- ${item.sha}: ${item.message}`);
+              });
+              core.setFailed("Conventional commit check failed.");
+              return;
+            }
+
+            core.info("Commit message convention ok.");
