@@ -50,6 +50,8 @@ jobs:
       DB_PASSWORD: root
       DB_DATABASE: app
       ACCESS_TOKEN_EXPIRES_IN: 30 days
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY || 'ci_dummy_resend_api_key' }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM || 'noreply@upperglam.local' }}
 
     steps:
       - name: Checkout
