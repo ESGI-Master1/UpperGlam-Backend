@@ -31,4 +31,13 @@ export default await Env.create(new URL('../', import.meta.url), {
   ACCESS_TOKEN_EXPIRES_IN: Env.schema.string.optional(),
   RESEND_API_KEY: Env.schema.string(),
   MAIL_FROM: Env.schema.string(),
+  FRONTEND_RESET_PASSWORD_URL: Env.schema.string.optional(),
+  PASSWORD_RESET_TOKEN_EXPIRES_MINUTES: Env.schema.number.optional(),
+  MINIO_ENDPOINT: Env.schema.string.optional(),
+  MINIO_PORT: Env.schema.number.optional(),
+  MINIO_USE_SSL: Env.schema.boolean.optional(),
+  MINIO_ACCESS_KEY: Env.schema.string.optional(),
+  MINIO_SECRET_KEY: Env.schema.string.optional(),
+  MINIO_BUCKET_USER_IMAGES: Env.schema.string.optional(),
+  MINIO_REGION: Env.schema.string.optional(),
 })
