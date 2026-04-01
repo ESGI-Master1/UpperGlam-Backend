@@ -1,6 +1,11 @@
 name: Apply Main Branch Protection
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-main-branch-protection.yml
   workflow_dispatch:
 
 permissions:
