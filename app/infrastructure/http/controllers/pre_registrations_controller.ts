@@ -17,20 +17,74 @@ const mailSender = new ResendMailSender()
 const resolveRoleIdUseCase = new ResolveRoleIdUseCase(roleRepository)
 const preRegisterUserUseCase = new PreRegisterUserUseCase(repository, passwordHasher, mailSender)
 
+function containsProviderPayload(payload: {
+  providerProfile?: {
+    displayName?: string
+    businessName?: string
+    instituteAddress?: string
+    serviceModes?: string[]
+    specialties?: string[]
+    priceFromCents?: number
+    yearsExperience?: number
+    hasCertification?: boolean
+    instagramUrl?: string
+    tiktokUrl?: string
+  }
+}) {
+  return Boolean(
+    payload.providerProfile &&
+    (payload.providerProfile.displayName ||
+      payload.providerProfile.businessName ||
+      payload.providerProfile.instituteAddress ||
+      payload.providerProfile.serviceModes?.length ||
+      payload.providerProfile.specialties?.length ||
+      payload.providerProfile.priceFromCents ||
+      payload.providerProfile.yearsExperience ||
+      payload.providerProfile.hasCertification ||
+      payload.providerProfile.instagramUrl ||
+      payload.providerProfile.tiktokUrl)
+  )
+}
+
 export default class PreRegistrationsController {
   async store({ request, response }: HttpContext) {
     const payload = await request.validateUsing(preRegistrationRequestValidator)
 
+    if (payload.role === 'provider') {
+      if (!payload.providerProfile?.displayName) {
+        return response.unprocessableEntity({
+          error: 'VALIDATION_ERROR',
+          message: 'displayName est obligatoire pour un prestataire.',
+        })
+      }
+    }
+
+    if (payload.role === 'user' && containsProviderPayload(payload)) {
+      return response.unprocessableEntity({
+        error: 'VALIDATION_ERROR',
+        message: 'providerProfile ne peut être envoyé que pour le role provider.',
+      })
+    }
+
     try {
       const roleId = await resolveRoleIdUseCase.execute({ role: payload.role })
       const result = await preRegisterUserUseCase.execute({
+        role: payload.role,
         roleId,
         email: payload.email,
         password: payload.password,
         phone: payload.phone,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
         username: payload.username,
         city: payload.city,
         zipcode: payload.zipcode,
+        marketingOptIn: payload.marketingOptIn,
+        source: payload.source,
+        desiredServices: payload.desiredServices,
+        preferredServiceModes: payload.preferredServiceModes,
+        preferredBudgetCents: payload.preferredBudgetCents,
+        providerProfile: payload.providerProfile,
         interest: payload.interest,
         comment: payload.comment,
       })

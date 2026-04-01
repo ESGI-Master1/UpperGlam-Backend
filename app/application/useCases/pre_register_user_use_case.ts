@@ -9,6 +9,8 @@ import { getThankYouEmailTemplate } from '#infrastructure/integrations/mail/temp
 export interface PreRegisterUserResult {
   status: 'ok'
   message: 'Pre-registration created'
+  role: 'user' | 'provider'
+  reviewStatus: 'submitted'
 }
 
 export class PreRegisterUserUseCase {
@@ -28,9 +30,30 @@ export class PreRegisterUserUseCase {
       passwordHash,
       phone: data.phone,
       status: 'pending',
+      firstName: data.firstName,
+      lastName: data.lastName,
       username: data.username,
       city: data.city,
       zipcode: data.zipcode,
+      marketingOptIn: data.marketingOptIn,
+      source: data.source,
+      desiredServices: data.desiredServices,
+      preferredServiceModes: data.preferredServiceModes,
+      preferredBudgetCents: data.preferredBudgetCents,
+      professionalDisplayName: data.professionalDisplayName,
+      businessName: data.businessName,
+      providerServiceModes: data.providerServiceModes,
+      providerInstituteAddress: data.providerInstituteAddress,
+      providerSpecialties: data.providerSpecialties,
+      providerPriceFromCents: data.providerPriceFromCents,
+      providerYearsExperience: data.providerYearsExperience,
+      providerHasCertification: data.providerHasCertification,
+      providerInstagramUrl: data.providerInstagramUrl,
+      providerTiktokUrl: data.providerTiktokUrl,
+      reviewStatus: 'submitted',
+      reviewedAt: null,
+      reviewedByUserId: null,
+      rejectionReason: null,
       interest: data.interest,
       comment: data.comment,
     }
@@ -43,6 +66,11 @@ export class PreRegisterUserUseCase {
       body: getThankYouEmailTemplate(data.username),
     })
 
-    return { status: 'ok', message: 'Pre-registration created' }
+    return {
+      status: 'ok',
+      message: 'Pre-registration created',
+      role: data.role,
+      reviewStatus: 'submitted',
+    }
   }
 }
