@@ -17,6 +17,7 @@ import { getPasswordChangedConfirmationEmailTemplate } from '#infrastructure/int
 import { getResetPasswordEmailTemplate } from '#infrastructure/integrations/mail/templates/reset_password'
 import { dataResponse, errorResponse } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
+import { cleanupExpiredSecurityArtifacts } from '#services/retention'
 
 const DEFAULT_RESET_TOKEN_EXPIRATION_MINUTES = 60
 const RESET_TOKEN_SIZE_IN_BYTES = 32
@@ -245,6 +246,7 @@ export default class AuthController {
 
   async forgotPassword({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(forgotPasswordValidator)
+    await cleanupExpiredSecurityArtifacts()
     const email = payload.email.toLowerCase()
 
     const user = await User.findBy('email', email)
@@ -295,6 +297,7 @@ export default class AuthController {
 
   async resetPassword({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(resetPasswordValidator)
+    await cleanupExpiredSecurityArtifacts()
 
     if (payload.password !== payload.passwordConfirmation) {
       return response.unprocessableEntity({
@@ -340,6 +343,7 @@ export default class AuthController {
 
   async resetPasswordWithCode({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(resetPasswordWithCodeValidator)
+    await cleanupExpiredSecurityArtifacts()
 
     if (payload.password !== payload.passwordConfirmation) {
       return response.unprocessableEntity({

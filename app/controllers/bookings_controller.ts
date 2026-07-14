@@ -119,6 +119,15 @@ function ensureFutureBooking(slotStartAt: Date | string) {
       message: 'Ce rendez-vous n’est plus modifiable.',
     })
   }
+
+  const cutoffHours = getModificationCutoffHours()
+  if (slotDate.diff(DateTime.utc(), 'hours').hours < cutoffHours) {
+    throw new ApiHttpError(409, {
+      code: 'BOOKING_MODIFICATION_WINDOW_CLOSED',
+      message: "Ce rendez-vous est trop proche pour être modifié depuis l'application.",
+      details: { cutoffHours },
+    })
+  }
 }
 
 function ensureMollieConfigured() {
@@ -157,6 +166,19 @@ function mapMolliePaymentStatus(status: string): PaymentStatus {
 function getRefundCutoffHours() {
   const value = env.get('BOOKING_REFUND_CUTOFF_HOURS')
   return value && value > 0 ? value : 24
+}
+
+function getModificationCutoffHours() {
+  const value = env.get('BOOKING_MODIFICATION_CUTOFF_HOURS')
+  return value && value > 0 ? value : 2
+}
+
+function getBookingStatusFilter(value: unknown): 'paid' | 'cancelled' | null {
+  if (value === 'paid' || value === 'cancelled') {
+    return value
+  }
+
+  return null
 }
 
 function getRefundEligibility(slotStartAt: Date | string) {
@@ -935,10 +957,11 @@ export default class BookingsController {
     const qs = request.qs()
     const page = parsePositiveInt(qs.page, 1, { min: 1, max: 100_000 })
     const limit = parsePositiveInt(qs.limit, 20, { min: 1, max: 100 })
+    const statusFilter = getBookingStatusFilter(qs.status)
 
     const countQuery = db.from('bookings').where('customer_user_id', user.id)
-    if (qs.status) {
-      countQuery.where('status', String(qs.status))
+    if (statusFilter) {
+      countQuery.where('status', statusFilter)
     }
     if (qs.from) {
       countQuery.where(
@@ -960,7 +983,7 @@ export default class BookingsController {
     const rows = (await db
       .from('bookings')
       .where('customer_user_id', user.id)
-      .if(Boolean(qs.status), (queryBuilder) => queryBuilder.where('status', String(qs.status)))
+      .if(Boolean(statusFilter), (queryBuilder) => queryBuilder.where('status', statusFilter!))
       .if(Boolean(qs.from), (queryBuilder) =>
         queryBuilder.where(
           'slot_start_at',

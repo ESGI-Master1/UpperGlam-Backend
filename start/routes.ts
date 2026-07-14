@@ -27,13 +27,28 @@ router.get('/', async () => {
   }
 })
 
-router.post('/auth/register', [AuthController, 'register'])
-router.post('/auth/login', [AuthController, 'login'])
-router.post('/auth/forgot-password', [AuthController, 'forgotPassword'])
-router.post('/auth/reset-password', [AuthController, 'resetPassword'])
-router.post('/auth/reset-password-with-code', [AuthController, 'resetPasswordWithCode'])
-router.post('/pre-registration', [PreRegistrationsController, 'store'])
-router.post('/payments/webhooks/mollie', [BookingsController, 'mollieWebhook'])
+router
+  .group(() => {
+    router.post('/auth/register', [AuthController, 'register'])
+    router.post('/auth/login', [AuthController, 'login'])
+  })
+  .use(middleware.rateLimit({ keyPrefix: 'auth', max: 10, windowMs: 60_000 }))
+
+router
+  .group(() => {
+    router.post('/auth/forgot-password', [AuthController, 'forgotPassword'])
+    router.post('/auth/reset-password', [AuthController, 'resetPassword'])
+    router.post('/auth/reset-password-with-code', [AuthController, 'resetPasswordWithCode'])
+  })
+  .use(middleware.rateLimit({ keyPrefix: 'password-reset', max: 5, windowMs: 60_000 }))
+
+router
+  .post('/pre-registration', [PreRegistrationsController, 'store'])
+  .use(middleware.rateLimit({ keyPrefix: 'pre-registration', max: 8, windowMs: 60_000 }))
+
+router
+  .post('/payments/webhooks/mollie', [BookingsController, 'mollieWebhook'])
+  .use(middleware.rateLimit({ keyPrefix: 'mollie-webhook', max: 120, windowMs: 60_000 }))
 
 router.get('/providers/tags', [ProvidersController, 'tags'])
 router.get('/providers/featured', [ProvidersController, 'featured'])
@@ -50,7 +65,9 @@ router
     router.post('/bookings/drafts', [BookingsController, 'createDraft'])
     router.get('/bookings/drafts/:draftId', [BookingsController, 'getDraft'])
     router.post('/bookings/drafts/:draftId/checkout', [BookingsController, 'checkoutDraft'])
-    router.post('/payments/intents', [BookingsController, 'createPaymentIntent'])
+    router
+      .post('/payments/intents', [BookingsController, 'createPaymentIntent'])
+      .use(middleware.rateLimit({ keyPrefix: 'payment-intent', max: 10, windowMs: 60_000 }))
     router.get('/bookings/me', [BookingsController, 'me'])
     router.get('/bookings/:bookingId', [BookingsController, 'show'])
     router.patch('/bookings/:bookingId', [BookingsController, 'update'])
@@ -67,17 +84,21 @@ router
     router.post('/uploads/commit', [UploadsController, 'commit'])
     router.get('/media/:mediaId', [UploadsController, 'getMediaUrl'])
 
-    router.get('/providers/me/dashboard', [ProvidersMeController, 'dashboard'])
-    router.get('/providers/me/profile', [ProvidersMeController, 'profile'])
-    router.patch('/providers/me/profile', [ProvidersMeController, 'updateProfile'])
-    router.get('/providers/me/bookings', [ProvidersMeController, 'bookings'])
-    router.get('/providers/me/availability', [ProvidersMeController, 'availability'])
-    router.post('/providers/me/availability', [ProvidersMeController, 'createAvailability'])
-    router.delete('/providers/me/availability/:slotId', [
-      ProvidersMeController,
-      'deleteAvailability',
-    ])
-    router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
+    router
+      .group(() => {
+        router.get('/providers/me/dashboard', [ProvidersMeController, 'dashboard'])
+        router.get('/providers/me/profile', [ProvidersMeController, 'profile'])
+        router.patch('/providers/me/profile', [ProvidersMeController, 'updateProfile'])
+        router.get('/providers/me/bookings', [ProvidersMeController, 'bookings'])
+        router.get('/providers/me/availability', [ProvidersMeController, 'availability'])
+        router.post('/providers/me/availability', [ProvidersMeController, 'createAvailability'])
+        router.delete('/providers/me/availability/:slotId', [
+          ProvidersMeController,
+          'deleteAvailability',
+        ])
+        router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
+      })
+      .use(middleware.provider())
   })
   .use(
     middleware.auth({

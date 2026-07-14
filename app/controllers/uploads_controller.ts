@@ -113,7 +113,7 @@ export default class UploadsController {
   }
 
   async getMediaUrl({ auth, params, response }: HttpContext) {
-    await auth.use('api').authenticate()
+    const user = auth.getUserOrFail()
     const mediaId = Number(params.mediaId)
     if (!Number.isFinite(mediaId) || mediaId <= 0) {
       return response.badRequest(
@@ -124,12 +124,27 @@ export default class UploadsController {
       )
     }
 
-    const media = await db.from('media_assets').where('id', mediaId).select('object_key').first()
+    const media = await db
+      .from('media_assets')
+      .where('id', mediaId)
+      .select('object_key', 'owner_user_id', 'visibility')
+      .first()
     if (!media) {
       return response.notFound(
         errorResponse({
           code: 'MEDIA_NOT_FOUND',
           message: 'Media introuvable',
+        })
+      )
+    }
+
+    const isOwner = Number(media.owner_user_id) === user.id
+    const isPublic = media.visibility === 'public'
+    if (!isOwner && !isPublic) {
+      return response.forbidden(
+        errorResponse({
+          code: 'MEDIA_FORBIDDEN',
+          message: 'Accès au média interdit',
         })
       )
     }
