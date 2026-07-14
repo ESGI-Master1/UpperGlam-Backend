@@ -90,6 +90,22 @@ router
         router.get('/providers/me/profile', [ProvidersMeController, 'profile'])
         router.patch('/providers/me/profile', [ProvidersMeController, 'updateProfile'])
         router.get('/providers/me/bookings', [ProvidersMeController, 'bookings'])
+        router.post('/providers/me/bookings/:bookingId/accept', [
+          ProvidersMeController,
+          'acceptBooking',
+        ])
+        router.post('/providers/me/bookings/:bookingId/reject', [
+          ProvidersMeController,
+          'rejectBooking',
+        ])
+        router.post('/providers/me/bookings/:bookingId/propose-slot', [
+          ProvidersMeController,
+          'proposeBookingSlot',
+        ])
+        router.patch('/providers/me/bookings/:bookingId/status', [
+          ProvidersMeController,
+          'updateBookingStatus',
+        ])
         router.get('/providers/me/availability', [ProvidersMeController, 'availability'])
         router.post('/providers/me/availability', [ProvidersMeController, 'createAvailability'])
         router.delete('/providers/me/availability/:slotId', [

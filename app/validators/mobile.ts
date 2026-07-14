@@ -51,6 +51,27 @@ export const createProviderAvailabilitySlotValidator = vine.compile(
   })
 )
 
+export const providerBookingRejectValidator = vine.compile(
+  vine.object({
+    reason: vine.string().trim().minLength(3).maxLength(1000),
+  })
+)
+
+export const providerBookingProposeSlotValidator = vine.compile(
+  vine.object({
+    slotStartAt: vine.string().trim(),
+    slotEndAt: vine.string().trim(),
+    note: vine.string().trim().maxLength(1000).optional(),
+  })
+)
+
+export const providerBookingStatusValidator = vine.compile(
+  vine.object({
+    status: vine.enum(['accepted', 'rejected'] as const),
+    reason: vine.string().trim().minLength(3).maxLength(1000).optional(),
+  })
+)
+
 export const updateUserProfileValidator = vine.compile(
   vine.object({
     firstName: vine.string().trim().minLength(1).maxLength(120).nullable().optional(),

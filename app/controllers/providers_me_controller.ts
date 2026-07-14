@@ -6,6 +6,9 @@ import { logBusinessEvent } from '#services/observability'
 import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 import {
   createProviderAvailabilitySlotValidator,
+  providerBookingProposeSlotValidator,
+  providerBookingRejectValidator,
+  providerBookingStatusValidator,
   updateProviderProfileValidator,
 } from '#validators/mobile'
 
@@ -22,6 +25,8 @@ type ProviderProfileRow = {
   rating_avg: string | number
   rating_count: number
 }
+
+type ProviderBookingStatus = 'pending' | 'accepted' | 'rejected' | 'slot_proposed'
 
 function toIso(value: unknown) {
   if (!value) {
@@ -48,6 +53,31 @@ function toProviderProfileDto(row: ProviderProfileRow) {
     currency: row.currency ?? 'EUR',
     rating: Number(row.rating_avg ?? 0),
     reviewCount: Number(row.rating_count ?? 0),
+  }
+}
+
+function toProviderBookingDto(booking: Record<string, unknown>) {
+  return {
+    id: Number(booking.id),
+    slotStartAt: toIso(booking.slot_start_at),
+    slotEndAt: toIso(booking.slot_end_at),
+    appointmentMode: booking.appointment_mode,
+    address: booking.address,
+    note: booking.note,
+    amountCents: Number(booking.amount_cents),
+    currency: booking.currency,
+    status: booking.status,
+    providerStatus: booking.provider_status ?? 'pending',
+    providerResponseNote: booking.provider_response_note ?? null,
+    providerProposedSlotStartAt: toIso(booking.provider_proposed_slot_start_at),
+    providerProposedSlotEndAt: toIso(booking.provider_proposed_slot_end_at),
+    providerRespondedAt: toIso(booking.provider_responded_at),
+    confirmationCode: booking.confirmation_code,
+    customer: {
+      firstName: booking.first_name ?? null,
+      lastName: booking.last_name ?? null,
+      email: booking.email ?? null,
+    },
   }
 }
 
@@ -107,7 +137,15 @@ export default class ProvidersMeController {
         .where('slot_start_at', '>=', now.toJSDate())
         .orderBy('slot_start_at', 'asc')
         .limit(3)
-        .select('id', 'slot_start_at', 'appointment_mode', 'amount_cents', 'currency', 'status'),
+        .select(
+          'id',
+          'slot_start_at',
+          'appointment_mode',
+          'amount_cents',
+          'currency',
+          'status',
+          'provider_status'
+        ),
       db
         .from('provider_availability_slots')
         .where('provider_profile_id', provider.id)
@@ -137,6 +175,7 @@ export default class ProvidersMeController {
           amountCents: Number(booking.amount_cents),
           currency: booking.currency,
           status: booking.status,
+          providerStatus: booking.provider_status ?? 'pending',
         })),
       })
     )
@@ -224,6 +263,11 @@ export default class ProvidersMeController {
         'b.amount_cents',
         'b.currency',
         'b.status',
+        'b.provider_status',
+        'b.provider_response_note',
+        'b.provider_proposed_slot_start_at',
+        'b.provider_proposed_slot_end_at',
+        'b.provider_responded_at',
         'b.confirmation_code',
         'up.first_name',
         'up.last_name',
@@ -232,25 +276,229 @@ export default class ProvidersMeController {
 
     return response.ok(
       dataResponse(
-        rows.map((booking) => ({
-          id: Number(booking.id),
-          slotStartAt: toIso(booking.slot_start_at),
-          slotEndAt: toIso(booking.slot_end_at),
-          appointmentMode: booking.appointment_mode,
-          address: booking.address,
-          note: booking.note,
-          amountCents: Number(booking.amount_cents),
-          currency: booking.currency,
-          status: booking.status,
-          confirmationCode: booking.confirmation_code,
-          customer: {
-            firstName: booking.first_name ?? null,
-            lastName: booking.last_name ?? null,
-            email: booking.email ?? null,
-          },
-        })),
+        rows.map((booking) => toProviderBookingDto(booking)),
         { meta: { page, limit, total: Number(totalResult?.total ?? 0) } }
       )
+    )
+  }
+
+  private async getOwnedBooking(providerProfileId: number, bookingId: number) {
+    return db
+      .from('bookings')
+      .where('id', bookingId)
+      .where('provider_profile_id', providerProfileId)
+      .first()
+  }
+
+  private async respondToBooking({
+    bookingId,
+    logger,
+    note,
+    provider,
+    response,
+    status,
+    userId,
+  }: {
+    bookingId: number
+    logger: HttpContext['logger']
+    note?: string | null
+    provider: ProviderProfileRow
+    response: HttpContext['response']
+    status: ProviderBookingStatus
+    userId: number
+  }) {
+    if (!Number.isFinite(bookingId) || bookingId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'bookingId invalide',
+        })
+      )
+    }
+
+    const booking = await this.getOwnedBooking(provider.id, bookingId)
+    if (!booking) {
+      return response.notFound(
+        errorResponse({
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Réservation introuvable.',
+        })
+      )
+    }
+
+    if (booking.status !== 'paid') {
+      return response.conflict(
+        errorResponse({
+          code: 'BOOKING_PROVIDER_STATUS_NOT_EDITABLE',
+          message: 'Cette réservation ne peut pas être modifiée par le prestataire.',
+        })
+      )
+    }
+
+    const currentProviderStatus = (booking.provider_status ?? 'pending') as ProviderBookingStatus
+    if (currentProviderStatus !== 'pending' && currentProviderStatus !== 'slot_proposed') {
+      return response.conflict(
+        errorResponse({
+          code: 'BOOKING_PROVIDER_STATUS_ALREADY_SET',
+          message: 'Cette réservation a déjà reçu une réponse prestataire.',
+        })
+      )
+    }
+
+    await db
+      .from('bookings')
+      .where('id', bookingId)
+      .update({
+        provider_status: status,
+        provider_response_note: note ?? null,
+        provider_responded_at: DateTime.utc().toJSDate(),
+        updated_at: DateTime.utc().toJSDate(),
+      })
+
+    logBusinessEvent({ logger }, 'provider.booking.status_updated', {
+      userId,
+      providerProfileId: provider.id,
+      bookingId,
+      providerStatus: status,
+    })
+
+    return response.ok(
+      dataResponse({
+        id: bookingId,
+        providerStatus: status,
+      })
+    )
+  }
+
+  async acceptBooking({ auth, params, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    return this.respondToBooking({
+      bookingId: Number(params.bookingId),
+      logger,
+      provider,
+      response,
+      status: 'accepted',
+      userId: user.id,
+    })
+  }
+
+  async rejectBooking({ auth, params, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(providerBookingRejectValidator)
+    return this.respondToBooking({
+      bookingId: Number(params.bookingId),
+      logger,
+      note: payload.reason,
+      provider,
+      response,
+      status: 'rejected',
+      userId: user.id,
+    })
+  }
+
+  async updateBookingStatus({ auth, params, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(providerBookingStatusValidator)
+    return this.respondToBooking({
+      bookingId: Number(params.bookingId),
+      logger,
+      note: payload.status === 'rejected' ? payload.reason : null,
+      provider,
+      response,
+      status: payload.status,
+      userId: user.id,
+    })
+  }
+
+  async proposeBookingSlot({ auth, params, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const bookingId = Number(params.bookingId)
+    if (!Number.isFinite(bookingId) || bookingId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'bookingId invalide',
+        })
+      )
+    }
+
+    const payload = await request.validateUsing(providerBookingProposeSlotValidator)
+    const startAt = DateTime.fromISO(payload.slotStartAt, { zone: 'utc' })
+    const endAt = DateTime.fromISO(payload.slotEndAt, { zone: 'utc' })
+
+    if (!startAt.isValid || !endAt.isValid || startAt >= endAt || startAt <= DateTime.utc()) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'Le créneau proposé est invalide.',
+        })
+      )
+    }
+
+    const booking = await this.getOwnedBooking(provider.id, bookingId)
+    if (!booking) {
+      return response.notFound(
+        errorResponse({
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Réservation introuvable.',
+        })
+      )
+    }
+
+    if (booking.status !== 'paid') {
+      return response.conflict(
+        errorResponse({
+          code: 'BOOKING_PROVIDER_STATUS_NOT_EDITABLE',
+          message: 'Cette réservation ne peut pas être modifiée par le prestataire.',
+        })
+      )
+    }
+
+    await db
+      .from('bookings')
+      .where('id', bookingId)
+      .update({
+        provider_status: 'slot_proposed',
+        provider_response_note: payload.note ?? null,
+        provider_proposed_slot_start_at: startAt.toJSDate(),
+        provider_proposed_slot_end_at: endAt.toJSDate(),
+        provider_responded_at: DateTime.utc().toJSDate(),
+        updated_at: DateTime.utc().toJSDate(),
+      })
+
+    logBusinessEvent({ logger }, 'provider.booking.slot_proposed', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      bookingId,
+    })
+
+    return response.ok(
+      dataResponse({
+        id: bookingId,
+        providerStatus: 'slot_proposed',
+        providerProposedSlotStartAt: startAt.toISO(),
+        providerProposedSlotEndAt: endAt.toISO(),
+      })
     )
   }
 

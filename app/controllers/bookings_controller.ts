@@ -34,6 +34,7 @@ type BookingRow = {
   currency: string
   created_at: Date
   status: 'paid' | 'cancelled'
+  provider_status?: 'pending' | 'accepted' | 'rejected' | 'slot_proposed' | null
   confirmation_code: string
 }
 
@@ -88,6 +89,7 @@ function buildBookingDto(booking: BookingRow, payment?: PaymentRow) {
     currency: booking.currency,
     createdAt: toIso(booking.created_at),
     status: booking.status,
+    providerStatus: booking.provider_status ?? 'pending',
     confirmationCode: booking.confirmation_code,
     paymentMethod: payment?.method ?? null,
     transactionId: payment?.provider_transaction_id ?? null,
@@ -419,6 +421,7 @@ export default class BookingsController {
         amount_cents: draft.amount_cents,
         currency: draft.currency,
         status: 'paid',
+        provider_status: 'pending',
         confirmation_code: confirmationCode,
       })
       .returning([
@@ -432,6 +435,7 @@ export default class BookingsController {
         'currency',
         'created_at',
         'status',
+        'provider_status',
         'confirmation_code',
       ])
 
