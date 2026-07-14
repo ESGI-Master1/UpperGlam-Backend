@@ -10,6 +10,7 @@ import {
 } from '#services/admin_audit'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
+import { emitOperationalAlert } from '#services/operational_alerts'
 import { rejectPreRegistrationValidator } from '#validators/admin_pre_registrations'
 
 type PreRegistrationRow = {
@@ -409,6 +410,19 @@ export default class AdminPreRegistrationsController {
             code: error.payload.code,
           },
         })
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'admin',
+            severity: 'warning',
+            message: 'Admin approval action failed',
+            attributes: {
+              adminUserId: adminUser.id,
+              preRegistrationId,
+              code: error.payload.code,
+            },
+          }
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
       throw error
@@ -443,6 +457,18 @@ export default class AdminPreRegistrationsController {
           'admin.pre_registration.approval_email_failed',
           { adminUserId: adminUser.id, preRegistrationId },
           'warn'
+        )
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'admin',
+            severity: 'warning',
+            message: 'Admin approval email failed',
+            attributes: {
+              adminUserId: adminUser.id,
+              preRegistrationId,
+            },
+          }
         )
       }
     }
@@ -539,6 +565,19 @@ export default class AdminPreRegistrationsController {
             code: error.payload.code,
           },
         })
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'admin',
+            severity: 'warning',
+            message: 'Admin rejection action failed',
+            attributes: {
+              adminUserId: adminUser.id,
+              preRegistrationId,
+              code: error.payload.code,
+            },
+          }
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
       throw error

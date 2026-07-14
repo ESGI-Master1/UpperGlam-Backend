@@ -14,6 +14,7 @@ import {
 } from '#services/mollie'
 import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 import { logBusinessEvent, withSpan } from '#services/observability'
+import { emitOperationalAlert } from '#services/operational_alerts'
 import {
   checkoutDraftValidator,
   createBookingDraftValidator,
@@ -762,6 +763,19 @@ export default class BookingsController {
           { userId: user.id, draftId: payload.draftId, code: error.payload.code },
           'warn'
         )
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'payment',
+            severity: 'warning',
+            message: 'Payment intent rejected',
+            attributes: {
+              userId: user.id,
+              draftId: payload.draftId,
+              code: error.payload.code,
+            },
+          }
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
 
@@ -851,6 +865,19 @@ export default class BookingsController {
           'payment.webhook.rejected',
           { paymentProvider: 'mollie', paymentId, code: error.payload.code },
           'warn'
+        )
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'payment',
+            severity: 'critical',
+            message: 'Payment webhook rejected',
+            attributes: {
+              paymentProvider: 'mollie',
+              paymentId,
+              code: error.payload.code,
+            },
+          }
         )
         return response.ok(dataResponse({ received: true }))
       }
@@ -944,6 +971,19 @@ export default class BookingsController {
           'booking.checkout.rejected',
           { userId: user.id, draftId, code: error.payload.code },
           'warn'
+        )
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'payment',
+            severity: error.payload.code === 'PAYMENT_NOT_CONFIRMED' ? 'warning' : 'critical',
+            message: 'Booking checkout rejected',
+            attributes: {
+              userId: user.id,
+              draftId,
+              code: error.payload.code,
+            },
+          }
         )
         return response.status(error.status).send(errorResponse(error.payload))
       }
