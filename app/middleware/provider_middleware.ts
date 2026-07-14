@@ -1,6 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import type { NextFn } from '@adonisjs/core/types/http'
 import db from '@adonisjs/lucid/services/db'
+import { canAccessProviderArea } from '#services/access_control'
 import { errorResponse } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
 
@@ -22,7 +23,7 @@ export default class ProviderMiddleware {
       .select('id')
       .first()
 
-    if (!providerRole || !providerProfile) {
+    if (!canAccessProviderArea(Boolean(providerRole), Boolean(providerProfile))) {
       logBusinessEvent(ctx, 'provider.access.denied', { userId: user.id }, 'warn')
       return ctx.response.forbidden(
         errorResponse({

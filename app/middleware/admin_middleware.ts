@@ -1,6 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import type { NextFn } from '@adonisjs/core/types/http'
 import db from '@adonisjs/lucid/services/db'
+import { canAccessAdminArea } from '#services/access_control'
 import { errorResponse } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
 
@@ -16,7 +17,7 @@ export default class AdminMiddleware {
       .select('r.id')
       .first()
 
-    if (!adminRole) {
+    if (!canAccessAdminArea(Boolean(adminRole))) {
       logBusinessEvent(ctx, 'admin.access.denied', { userId: user.id }, 'warn')
       return ctx.response.forbidden(
         errorResponse({

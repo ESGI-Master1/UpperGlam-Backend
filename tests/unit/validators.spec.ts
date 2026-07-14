@@ -1,11 +1,21 @@
 import { errors } from '@vinejs/vine'
 import { test } from '@japa/runner'
-import { loginValidator, registerValidator, resetPasswordWithCodeValidator } from '#validators/auth'
+import { rejectPreRegistrationValidator } from '#validators/admin_pre_registrations'
+import {
+  forgotPasswordValidator,
+  loginValidator,
+  registerValidator,
+  resetPasswordValidator,
+  resetPasswordWithCodeValidator,
+} from '#validators/auth'
 import {
   checkoutDraftValidator,
   createBookingDraftValidator,
   paymentIntentValidator,
+  updateBookingValidator,
   updateProviderProfileValidator,
+  uploadCommitValidator,
+  uploadPresignValidator,
 } from '#validators/mobile'
 
 async function expectValidationError(callback: () => Promise<unknown>) {
@@ -46,6 +56,40 @@ test.group('auth validators', () => {
       {
         email: 'user@example.com',
         password: 'Password123!',
+      }
+    )
+  })
+
+  test('accepts forgot and reset password payloads', async ({ assert }) => {
+    assert.deepEqual(await forgotPasswordValidator.validate({ email: ' USER@EXAMPLE.COM ' }), {
+      email: 'USER@EXAMPLE.COM',
+    })
+
+    assert.deepEqual(
+      await resetPasswordValidator.validate({
+        token: 'a'.repeat(64),
+        password: 'Password123!',
+        passwordConfirmation: 'Password123!',
+      }),
+      {
+        token: 'a'.repeat(64),
+        password: 'Password123!',
+        passwordConfirmation: 'Password123!',
+      }
+    )
+
+    assert.deepEqual(
+      await resetPasswordWithCodeValidator.validate({
+        email: 'user@example.com',
+        code: '123456',
+        password: 'Password123!',
+        passwordConfirmation: 'Password123!',
+      }),
+      {
+        email: 'user@example.com',
+        code: '123456',
+        password: 'Password123!',
+        passwordConfirmation: 'Password123!',
       }
     )
   })
@@ -111,5 +155,84 @@ test.group('booking and provider validators', () => {
         serviceModes: ['home', 'invalid'],
       })
     )
+  })
+
+  test('accepts booking update and media upload payloads', async ({ assert }) => {
+    assert.deepEqual(
+      await updateBookingValidator.validate({
+        appointmentMode: 'institute',
+        address: null,
+        note: '  Nouvelle note  ',
+      }),
+      {
+        appointmentMode: 'institute',
+        address: null,
+        note: 'Nouvelle note',
+      }
+    )
+
+    assert.deepEqual(
+      await uploadPresignValidator.validate({
+        category: 'profile',
+        extension: ' jpg ',
+        mimeType: ' image/jpeg ',
+        sizeBytes: 1024,
+      }),
+      {
+        category: 'profile',
+        extension: 'jpg',
+        mimeType: 'image/jpeg',
+        sizeBytes: 1024,
+      }
+    )
+
+    assert.deepEqual(
+      await uploadCommitValidator.validate({
+        category: 'review',
+        objectKey: ' users/1/review/photo.webp ',
+        mimeType: ' image/webp ',
+        sizeBytes: 4096,
+      }),
+      {
+        category: 'review',
+        objectKey: 'users/1/review/photo.webp',
+        mimeType: 'image/webp',
+        sizeBytes: 4096,
+      }
+    )
+  })
+
+  test('rejects unsafe media payloads', async () => {
+    await expectValidationError(() =>
+      uploadPresignValidator.validate({
+        category: 'profile',
+        extension: 'x',
+        mimeType: 'image/jpeg',
+        sizeBytes: 1024,
+      })
+    )
+    await expectValidationError(() =>
+      uploadCommitValidator.validate({
+        category: 'review',
+        objectKey: 'ok',
+        mimeType: 'image/webp',
+        sizeBytes: -1,
+      })
+    )
+  })
+})
+
+test.group('admin validators', () => {
+  test('accepts meaningful rejection reasons', async ({ assert }) => {
+    assert.deepEqual(
+      await rejectPreRegistrationValidator.validate({ reason: '  Dossier incomplet ' }),
+      {
+        reason: 'Dossier incomplet',
+      }
+    )
+  })
+
+  test('rejects empty rejection reasons', async () => {
+    await expectValidationError(() => rejectPreRegistrationValidator.validate({ reason: 'no' }))
   })
 })
