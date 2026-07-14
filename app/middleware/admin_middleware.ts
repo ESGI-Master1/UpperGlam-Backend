@@ -2,6 +2,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import type { NextFn } from '@adonisjs/core/types/http'
 import db from '@adonisjs/lucid/services/db'
 import { errorResponse } from '#services/http'
+import { logBusinessEvent } from '#services/observability'
 
 export default class AdminMiddleware {
   async handle(ctx: HttpContext, next: NextFn) {
@@ -16,6 +17,7 @@ export default class AdminMiddleware {
       .first()
 
     if (!adminRole) {
+      logBusinessEvent(ctx, 'admin.access.denied', { userId: user.id }, 'warn')
       return ctx.response.forbidden(
         errorResponse({
           code: 'ADMIN_FORBIDDEN',

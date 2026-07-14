@@ -4,6 +4,7 @@ import { DateTime } from 'luxon'
 import { ResendMailSender } from '#infrastructure/integrations/mail/resend_mail_sender'
 import { getPreRegistrationApprovedTemplate } from '#infrastructure/integrations/mail/templates/pre_registration_approved'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
+import { logBusinessEvent } from '#services/observability'
 import { rejectPreRegistrationValidator } from '#validators/admin_pre_registrations'
 
 type PreRegistrationRow = {
@@ -370,6 +371,12 @@ export default class AdminPreRegistrationsController {
           status: 'active',
         })
 
+        logBusinessEvent({ logger }, 'admin.pre_registration.approved', {
+          adminUserId: adminUser.id,
+          preRegistrationId,
+          targetUserId: Number(current.user_id),
+        })
+
         recipientEmail = String(current.email)
         recipientFirstName = String(current.first_name ?? current.username ?? 'Bonjour')
       })
@@ -404,6 +411,12 @@ export default class AdminPreRegistrationsController {
           { error, preRegistrationId, email: recipientEmail },
           'Failed to send pre-registration approval email'
         )
+        logBusinessEvent(
+          { logger },
+          'admin.pre_registration.approval_email_failed',
+          { adminUserId: adminUser.id, preRegistrationId },
+          'warn'
+        )
       }
     }
 
@@ -418,7 +431,7 @@ export default class AdminPreRegistrationsController {
     )
   }
 
-  async reject({ auth, params, request, response }: HttpContext) {
+  async reject({ auth, params, request, response, logger }: HttpContext) {
     const preRegistrationId = Number(params.preRegistrationId)
     if (!Number.isFinite(preRegistrationId) || preRegistrationId <= 0) {
       return response.badRequest(
@@ -465,6 +478,13 @@ export default class AdminPreRegistrationsController {
 
         await trx.from('users').where('id', Number(current.user_id)).update({
           status: 'suspended',
+        })
+
+        logBusinessEvent({ logger }, 'admin.pre_registration.rejected', {
+          adminUserId: adminUser.id,
+          preRegistrationId,
+          targetUserId: Number(current.user_id),
+          reasonLength: payload.reason.length,
         })
       })
     } catch (error) {

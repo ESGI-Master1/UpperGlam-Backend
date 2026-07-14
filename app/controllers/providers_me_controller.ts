@@ -2,6 +2,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { dataResponse, errorResponse, parsePositiveInt } from '#services/http'
+import { logBusinessEvent } from '#services/observability'
 import {
   createProviderAvailabilitySlotValidator,
   updateProviderProfileValidator,
@@ -149,7 +150,7 @@ export default class ProvidersMeController {
     return response.ok(dataResponse(toProviderProfileDto(provider)))
   }
 
-  async updateProfile({ auth, request, response }: HttpContext) {
+  async updateProfile({ auth, request, response, logger }: HttpContext) {
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -175,6 +176,11 @@ export default class ProvidersMeController {
       })
 
     const updatedProvider = await this.getMyProviderProfile(user.id)
+    logBusinessEvent({ logger }, 'provider.profile.updated', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      updatedFields: Object.keys(payload).join(','),
+    })
     return response.ok(dataResponse(toProviderProfileDto(updatedProvider!)))
   }
 
@@ -289,7 +295,7 @@ export default class ProvidersMeController {
     )
   }
 
-  async createAvailability({ auth, request, response }: HttpContext) {
+  async createAvailability({ auth, request, response, logger }: HttpContext) {
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -320,6 +326,12 @@ export default class ProvidersMeController {
         })
         .returning(['id', 'slot_start_at', 'slot_end_at', 'is_booked', 'booking_id'])
 
+      logBusinessEvent({ logger }, 'provider.availability.created', {
+        userId: user.id,
+        providerProfileId: provider.id,
+        slotId: Number(slot.id),
+      })
+
       return response.created(
         dataResponse({
           id: Number(slot.id),
@@ -331,6 +343,12 @@ export default class ProvidersMeController {
       )
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+        logBusinessEvent(
+          { logger },
+          'provider.availability.conflict',
+          { userId: user.id, providerProfileId: provider.id },
+          'warn'
+        )
         return response.conflict(
           errorResponse({
             code: 'PROVIDER_SLOT_ALREADY_EXISTS',
@@ -343,7 +361,7 @@ export default class ProvidersMeController {
     }
   }
 
-  async deleteAvailability({ auth, params, response }: HttpContext) {
+  async deleteAvailability({ auth, params, response, logger }: HttpContext) {
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -385,6 +403,11 @@ export default class ProvidersMeController {
     }
 
     await db.from('provider_availability_slots').where('id', slotId).delete()
+    logBusinessEvent({ logger }, 'provider.availability.deleted', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      slotId,
+    })
     return response.ok(dataResponse({ deleted: true }))
   }
 

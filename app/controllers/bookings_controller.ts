@@ -4,6 +4,7 @@ import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { createMolliePayment, getMolliePayment, isMollieConfigured } from '#services/mollie'
+import { logBusinessEvent, withSpan } from '#services/observability'
 import {
   checkoutDraftValidator,
   createBookingDraftValidator,
@@ -141,7 +142,7 @@ export default class BookingsController {
       .first()
   }
 
-  async createDraft({ auth, request, response }: HttpContext) {
+  async createDraft({ auth, request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(createBookingDraftValidator)
     ensureAddressForHomeMode(payload.appointmentMode, payload.address ?? null)
 
@@ -174,6 +175,12 @@ export default class BookingsController {
       .first()
 
     if (!slot) {
+      logBusinessEvent(
+        { logger },
+        'booking.draft.slot_unavailable',
+        { userId: user.id, providerProfileId: payload.providerId },
+        'warn'
+      )
       return response.conflict(
         errorResponse({
           code: 'BOOKING_SLOT_UNAVAILABLE',
@@ -210,6 +217,14 @@ export default class BookingsController {
         'created_at',
         'status',
       ])
+
+    logBusinessEvent({ logger }, 'booking.draft.created', {
+      userId: user.id,
+      draftId: Number(draft.id),
+      providerProfileId: Number(draft.provider_profile_id),
+      amountCents: Number(draft.amount_cents),
+      currency: draft.currency,
+    })
 
     return response.created(
       dataResponse({
@@ -271,7 +286,7 @@ export default class BookingsController {
     )
   }
 
-  async createPaymentIntent({ auth, request, response }: HttpContext) {
+  async createPaymentIntent({ auth, request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(paymentIntentValidator)
     const user = auth.getUserOrFail()
 
@@ -284,6 +299,12 @@ export default class BookingsController {
         .first()
 
       if (!draft) {
+        logBusinessEvent(
+          { logger },
+          'payment.intent.draft_not_found',
+          { userId: user.id, draftId: payload.draftId },
+          'warn'
+        )
         return response.notFound(
           errorResponse({
             code: 'BOOKING_DRAFT_NOT_FOUND',
@@ -305,17 +326,39 @@ export default class BookingsController {
         throw error
       }
 
-      const payment = await createMolliePayment({
-        amountCents: Number(draft.amount_cents),
-        currency: String(draft.currency ?? 'EUR'),
-        description: `Upper Glam réservation ${draft.id}`,
-        method: toMollieMethod(payload.method),
-        metadata: {
-          draftId: String(draft.id),
-          customerUserId: String(user.id),
-          providerProfileId: String(draft.provider_profile_id),
-          method: payload.method,
+      const payment = await withSpan(
+        'payment.mollie.create',
+        {
+          'payment.provider': 'mollie',
+          'payment.method': payload.method,
+          'booking.draft_id': Number(draft.id),
+          'payment.amount_cents': Number(draft.amount_cents),
+          'payment.currency': String(draft.currency ?? 'EUR').toUpperCase(),
         },
+        () =>
+          createMolliePayment({
+            amountCents: Number(draft.amount_cents),
+            currency: String(draft.currency ?? 'EUR'),
+            description: `Upper Glam réservation ${draft.id}`,
+            method: toMollieMethod(payload.method),
+            metadata: {
+              draftId: String(draft.id),
+              customerUserId: String(user.id),
+              providerProfileId: String(draft.provider_profile_id),
+              method: payload.method,
+            },
+          })
+      )
+
+      logBusinessEvent({ logger }, 'payment.intent.created', {
+        userId: user.id,
+        draftId: Number(draft.id),
+        providerProfileId: Number(draft.provider_profile_id),
+        paymentProvider: 'mollie',
+        paymentMethod: payload.method,
+        paymentStatus: payment.status,
+        amountCents: Number(draft.amount_cents),
+        currency: String(draft.currency ?? 'EUR').toUpperCase(),
       })
 
       return response.ok(
@@ -330,6 +373,12 @@ export default class BookingsController {
       )
     } catch (error) {
       if (error instanceof ApiHttpError) {
+        logBusinessEvent(
+          { logger },
+          'payment.intent.rejected',
+          { userId: user.id, draftId: payload.draftId, code: error.payload.code },
+          'warn'
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
 
@@ -337,7 +386,7 @@ export default class BookingsController {
     }
   }
 
-  async checkoutDraft({ auth, params, request, response }: HttpContext) {
+  async checkoutDraft({ auth, params, request, response, logger }: HttpContext) {
     const draftId = Number(params.draftId)
     const payload = await request.validateUsing(checkoutDraftValidator)
     const user = auth.getUserOrFail()
@@ -353,7 +402,11 @@ export default class BookingsController {
 
     try {
       ensureMollieConfigured()
-      const molliePayment = await getMolliePayment(payload.paymentId)
+      const molliePayment = await withSpan(
+        'payment.mollie.get',
+        { 'payment.provider': 'mollie', 'payment.id': payload.paymentId },
+        () => getMolliePayment(payload.paymentId)
+      )
       const booking = await db.transaction(async (trx) => {
         const draft = await trx
           .from('booking_drafts')
@@ -388,6 +441,18 @@ export default class BookingsController {
             updated_at: DateTime.utc().toJSDate(),
           })
 
+          logBusinessEvent(
+            { logger },
+            'payment.checkout.not_confirmed',
+            {
+              userId: user.id,
+              draftId,
+              paymentProvider: 'mollie',
+              paymentStatus: molliePayment.status,
+            },
+            'warn'
+          )
+
           throw new ApiHttpError(409, {
             code: 'PAYMENT_NOT_CONFIRMED',
             message: 'Le paiement n’a pas été confirmé par le PSP.',
@@ -407,6 +472,18 @@ export default class BookingsController {
             updated_at: DateTime.utc().toJSDate(),
           })
 
+          logBusinessEvent(
+            { logger },
+            'payment.checkout.mismatch',
+            {
+              userId: user.id,
+              draftId: Number(draft.id),
+              paymentProvider: 'mollie',
+              paymentStatus: molliePayment.status,
+            },
+            'error'
+          )
+
           throw new ApiHttpError(409, {
             code: 'PAYMENT_INTENT_MISMATCH',
             message: 'Le paiement ne correspond pas à la réservation.',
@@ -425,6 +502,17 @@ export default class BookingsController {
             status: 'payment_failed',
             updated_at: DateTime.utc().toJSDate(),
           })
+
+          logBusinessEvent(
+            { logger },
+            'booking.checkout.slot_unavailable',
+            {
+              userId: user.id,
+              draftId: Number(draft.id),
+              providerProfileId: Number(draft.provider_profile_id),
+            },
+            'warn'
+          )
 
           throw new ApiHttpError(409, {
             code: 'BOOKING_SLOT_UNAVAILABLE',
@@ -493,11 +581,26 @@ export default class BookingsController {
         }
       })
 
+      logBusinessEvent({ logger }, 'booking.checkout.succeeded', {
+        userId: user.id,
+        draftId,
+        bookingId: Number(booking.booking.id),
+        providerProfileId: Number(booking.booking.provider_profile_id),
+        paymentProvider: 'mollie',
+        paymentMethod: payload.method,
+      })
+
       return response.ok(
         dataResponse(buildBookingDto(booking.booking as BookingRow, booking.payment))
       )
     } catch (error) {
       if (error instanceof ApiHttpError) {
+        logBusinessEvent(
+          { logger },
+          'booking.checkout.rejected',
+          { userId: user.id, draftId, code: error.payload.code },
+          'warn'
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
 
