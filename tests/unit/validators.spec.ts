@@ -157,6 +157,29 @@ test.group('booking and provider validators', () => {
     )
   })
 
+  test('accepts complete provider profile payloads', async ({ assert }) => {
+    assert.deepEqual(
+      await updateProviderProfileValidator.validate({
+        displayName: '  Maison Upper  ',
+        city: '  Paris  ',
+        bio: '  Studio premium  ',
+        instituteAddress: '  12 rue de Rivoli  ',
+        serviceModes: ['home', 'institute'],
+        homeServiceZones: ['  Paris 8e  ', 'Neuilly-sur-Seine'],
+        priceFromCents: 9000,
+      }),
+      {
+        displayName: 'Maison Upper',
+        city: 'Paris',
+        bio: 'Studio premium',
+        instituteAddress: '12 rue de Rivoli',
+        serviceModes: ['home', 'institute'],
+        homeServiceZones: ['Paris 8e', 'Neuilly-sur-Seine'],
+        priceFromCents: 9000,
+      }
+    )
+  })
+
   test('accepts booking update and media upload payloads', async ({ assert }) => {
     assert.deepEqual(
       await updateBookingValidator.validate({

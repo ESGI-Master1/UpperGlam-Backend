@@ -40,6 +40,7 @@ export const updateProviderProfileValidator = vine.compile(
     bio: vine.string().trim().maxLength(5000).nullable().optional(),
     instituteAddress: vine.string().trim().maxLength(1000).nullable().optional(),
     serviceModes: vine.array(vine.enum(['home', 'institute'] as const)).optional(),
+    homeServiceZones: vine.array(vine.string().trim().minLength(2).maxLength(120)).optional(),
     priceFromCents: vine.number().min(0).nullable().optional(),
   })
 )

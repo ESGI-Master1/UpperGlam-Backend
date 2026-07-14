@@ -22,6 +22,7 @@ type ProviderProfileRow = {
   bio: string | null
   institute_address: string | null
   service_modes: string[] | null
+  home_service_zones: string[] | null
   price_from_cents: string | number | null
   currency: string
   rating_avg: string | number
@@ -51,6 +52,7 @@ function toProviderProfileDto(row: ProviderProfileRow) {
     bio: row.bio,
     instituteAddress: row.institute_address,
     serviceModes: Array.isArray(row.service_modes) ? row.service_modes : [],
+    homeServiceZones: Array.isArray(row.home_service_zones) ? row.home_service_zones : [],
     priceFromCents: row.price_from_cents === null ? null : Number(row.price_from_cents),
     currency: row.currency ?? 'EUR',
     rating: Number(row.rating_avg ?? 0),
@@ -237,6 +239,7 @@ export default class ProvidersMeController {
             ? provider.institute_address
             : payload.instituteAddress,
         service_modes: payload.serviceModes ?? provider.service_modes ?? [],
+        home_service_zones: payload.homeServiceZones ?? provider.home_service_zones ?? [],
         price_from_cents:
           payload.priceFromCents === undefined ? provider.price_from_cents : payload.priceFromCents,
         updated_at: DateTime.utc().toJSDate(),
