@@ -3,6 +3,7 @@ import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { getSignedUrlsByMediaIds } from '#services/media_assets'
+import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 
 type ProviderRow = {
   id: number
@@ -174,6 +175,7 @@ export default class ProvidersController {
   }
 
   async featured({ request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const limit = parsePositiveInt(request.input('limit'), 4, { min: 1, max: 20 })
     const rows = (await db
       .from('provider_profiles as pp')
@@ -200,6 +202,7 @@ export default class ProvidersController {
   }
 
   async index({ request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const qs = request.qs()
     const page = parsePositiveInt(qs.page, 1, { min: 1, max: 100_000 })
     const limit = parsePositiveInt(qs.limit, 20, { min: 1, max: 100 })
@@ -250,6 +253,7 @@ export default class ProvidersController {
   }
 
   async show({ params, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const providerId = Number(params.providerId)
     if (!Number.isFinite(providerId) || providerId <= 0) {
       return response.badRequest(
@@ -382,6 +386,7 @@ export default class ProvidersController {
   }
 
   async availability({ params, request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const providerId = Number(params.providerId)
     const from = request.input('from')
     const to = request.input('to')

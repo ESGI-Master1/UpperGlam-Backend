@@ -9,7 +9,7 @@ type MollieLink = {
 
 export type MolliePayment = {
   id: string
-  status: string
+  status: 'open' | 'canceled' | 'pending' | 'authorized' | 'expired' | 'failed' | 'paid' | string
   method?: string | null
   amount: {
     currency: string
@@ -22,11 +22,31 @@ export type MolliePayment = {
   }
 }
 
+export type MollieRefund = {
+  id: string
+  paymentId?: string
+  status?: string
+  amount: {
+    currency: string
+    value: string
+  }
+  description?: string
+  metadata?: Record<string, unknown> | null
+}
+
 type CreateMolliePaymentInput = {
   amountCents: number
   currency: string
   description: string
   method: 'applepay' | 'googlepay'
+  metadata: Record<string, string>
+}
+
+type CreateMollieRefundInput = {
+  paymentId: string
+  amountCents: number
+  currency: string
+  description: string
   metadata: Record<string, string>
 }
 
@@ -87,4 +107,18 @@ export async function createMolliePayment(input: CreateMolliePaymentInput) {
 
 export async function getMolliePayment(paymentId: string) {
   return requestMollie<MolliePayment>(`/payments/${encodeURIComponent(paymentId)}`)
+}
+
+export async function createMollieRefund(input: CreateMollieRefundInput) {
+  return requestMollie<MollieRefund>(`/payments/${encodeURIComponent(input.paymentId)}/refunds`, {
+    method: 'POST',
+    body: JSON.stringify({
+      amount: {
+        currency: input.currency.toUpperCase(),
+        value: formatMollieAmount(input.amountCents),
+      },
+      description: input.description,
+      metadata: input.metadata,
+    }),
+  })
 }

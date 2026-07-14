@@ -3,6 +3,7 @@ import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
+import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 import {
   createProviderAvailabilitySlotValidator,
   updateProviderProfileValidator,
@@ -68,6 +69,7 @@ export default class ProvidersMeController {
   }
 
   async dashboard({ auth, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -185,6 +187,7 @@ export default class ProvidersMeController {
   }
 
   async bookings({ auth, request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -252,6 +255,7 @@ export default class ProvidersMeController {
   }
 
   async availability({ auth, request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -296,6 +300,7 @@ export default class ProvidersMeController {
   }
 
   async createAvailability({ auth, request, response, logger }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -362,6 +367,7 @@ export default class ProvidersMeController {
   }
 
   async deleteAvailability({ auth, params, response, logger }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {
@@ -412,6 +418,7 @@ export default class ProvidersMeController {
   }
 
   async revenue({ auth, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
     const provider = await this.getMyProviderProfile(user.id)
     if (!provider) {

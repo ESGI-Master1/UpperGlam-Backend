@@ -1,9 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import type { HttpContext } from '@adonisjs/core/http'
+import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
+import env from '#start/env'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
-import { createMolliePayment, getMolliePayment, isMollieConfigured } from '#services/mollie'
+import {
+  createMolliePayment,
+  createMollieRefund,
+  getMolliePayment,
+  isMollieConfigured,
+  type MolliePayment,
+} from '#services/mollie'
+import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 import { logBusinessEvent, withSpan } from '#services/observability'
 import {
   checkoutDraftValidator,
@@ -30,7 +39,29 @@ type BookingRow = {
 type PaymentRow = {
   method?: string | null
   provider_transaction_id?: string | null
+  status?: PaymentStatus | null
+  refund_transaction_id?: string | null
+  refunded_at?: Date | string | null
 } | null
+
+type PaymentMethod = 'apple_pay' | 'google_pay'
+type PaymentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'refunded'
+
+type BookingDraftRow = {
+  id: number
+  customer_user_id: number
+  provider_profile_id: number
+  slot_start_at: Date
+  slot_end_at: Date
+  appointment_mode: 'home' | 'institute'
+  address: string | null
+  note: string | null
+  amount_cents: string | number
+  currency: string
+  status: 'pending_payment' | 'payment_failed' | 'expired' | 'completed'
+  expires_at: Date | string
+  created_at: Date | string
+}
 
 function toIso(value: Date | string | null | undefined) {
   if (!value) {
@@ -59,6 +90,9 @@ function buildBookingDto(booking: BookingRow, payment?: PaymentRow) {
     confirmationCode: booking.confirmation_code,
     paymentMethod: payment?.method ?? null,
     transactionId: payment?.provider_transaction_id ?? null,
+    paymentStatus: payment?.status ?? null,
+    refundTransactionId: payment?.refund_transaction_id ?? null,
+    refundedAt: toIso(payment?.refunded_at),
   }
 }
 
@@ -96,8 +130,47 @@ function ensureMollieConfigured() {
   }
 }
 
-function toMollieMethod(method: 'apple_pay' | 'google_pay') {
+function toMollieMethod(method: PaymentMethod) {
   return method === 'apple_pay' ? 'applepay' : 'googlepay'
+}
+
+function toPaymentMethod(method: unknown): PaymentMethod {
+  return method === 'google_pay' ? 'google_pay' : 'apple_pay'
+}
+
+function mapMolliePaymentStatus(status: string): PaymentStatus {
+  if (status === 'paid') {
+    return 'succeeded'
+  }
+
+  if (status === 'failed' || status === 'expired' || status === 'canceled') {
+    return 'failed'
+  }
+
+  if (status === 'pending' || status === 'authorized' || status === 'open') {
+    return 'processing'
+  }
+
+  return 'pending'
+}
+
+function getRefundCutoffHours() {
+  const value = env.get('BOOKING_REFUND_CUTOFF_HOURS')
+  return value && value > 0 ? value : 24
+}
+
+function getRefundEligibility(slotStartAt: Date | string) {
+  const slotDate = DateTime.fromJSDate(
+    slotStartAt instanceof Date ? slotStartAt : new Date(slotStartAt),
+    { zone: 'utc' }
+  )
+  const hoursUntilAppointment = slotDate.diff(DateTime.utc(), 'hours').hours
+
+  return {
+    canCancel: hoursUntilAppointment > 0,
+    refundEligible: hoursUntilAppointment >= getRefundCutoffHours(),
+    hoursUntilAppointment,
+  }
 }
 
 function assertPayableDraft(draft: {
@@ -138,13 +211,244 @@ export default class BookingsController {
       .from('payments')
       .where('booking_id', bookingId)
       .orderBy('created_at', 'desc')
-      .select('method', 'provider_transaction_id')
+      .select('method', 'provider_transaction_id', 'status', 'refund_transaction_id', 'refunded_at')
       .first()
+  }
+
+  private async upsertPaymentIntent(
+    trx: TransactionClientContract,
+    draft: BookingDraftRow,
+    payment: MolliePayment,
+    method: PaymentMethod,
+    idempotencyKey: string
+  ) {
+    const status = mapMolliePaymentStatus(payment.status)
+    const existing = await trx
+      .from('payments')
+      .where('provider_transaction_id', payment.id)
+      .forUpdate()
+      .first()
+
+    const values = {
+      booking_draft_id: draft.id,
+      method,
+      provider: 'mollie',
+      provider_transaction_id: payment.id,
+      provider_reference: payment._links?.self?.href ?? null,
+      checkout_url: payment._links?.checkout?.href ?? null,
+      idempotency_key: idempotencyKey,
+      status,
+      provider_payload: JSON.stringify(payment),
+      updated_at: DateTime.utc().toJSDate(),
+    }
+
+    if (existing) {
+      await trx.from('payments').where('id', existing.id).update(values)
+      return { ...existing, ...values }
+    }
+
+    const [created] = await trx
+      .table('payments')
+      .insert({
+        ...values,
+        created_at: DateTime.utc().toJSDate(),
+      })
+      .returning('*')
+
+    return created
+  }
+
+  private async syncPaymentFromMollie(
+    trx: TransactionClientContract,
+    payment: MolliePayment,
+    fallbackDraft?: BookingDraftRow | null,
+    fallbackMethod?: PaymentMethod,
+    idempotencyKey?: string
+  ) {
+    const existing = await trx
+      .from('payments')
+      .where('provider_transaction_id', payment.id)
+      .forUpdate()
+      .first()
+
+    const metadata = payment.metadata ?? {}
+    const draftId = Number(existing?.booking_draft_id ?? fallbackDraft?.id ?? metadata.draftId)
+    const method = toPaymentMethod(existing?.method ?? fallbackMethod ?? metadata.method)
+    const draft =
+      fallbackDraft ??
+      ((await trx
+        .from('booking_drafts')
+        .where('id', draftId)
+        .forUpdate()
+        .first()) as BookingDraftRow | null)
+
+    if (!draft) {
+      throw new ApiHttpError(404, {
+        code: 'BOOKING_DRAFT_NOT_FOUND',
+        message: 'Draft de réservation introuvable',
+      })
+    }
+
+    const key = idempotencyKey ?? existing?.idempotency_key ?? `draft:${draft.id}:${method}`
+    const syncedPayment = await this.upsertPaymentIntent(trx, draft, payment, method, key)
+
+    return { draft, payment: syncedPayment, method }
+  }
+
+  private assertPaymentMatchesDraft(
+    draft: BookingDraftRow,
+    payment: MolliePayment,
+    userId?: number
+  ) {
+    const metadata = payment.metadata ?? {}
+    const amountMatches =
+      Math.round(Number(payment.amount.value) * 100) === Number(draft.amount_cents)
+    const currencyMatches =
+      payment.amount.currency.toUpperCase() === String(draft.currency).toUpperCase()
+    const draftMatches = metadata.draftId === String(draft.id)
+    const userMatches = userId === undefined || metadata.customerUserId === String(userId)
+
+    if (!amountMatches || !currencyMatches || !draftMatches || !userMatches) {
+      throw new ApiHttpError(409, {
+        code: 'PAYMENT_INTENT_MISMATCH',
+        message: 'Le paiement ne correspond pas à la réservation.',
+      })
+    }
+  }
+
+  private async completePaidDraft(
+    trx: TransactionClientContract,
+    draft: BookingDraftRow,
+    payment: MolliePayment,
+    method: PaymentMethod,
+    userId?: number
+  ) {
+    this.assertPaymentMatchesDraft(draft, payment, userId)
+
+    const existingBooking = await trx.from('bookings').where('draft_id', draft.id).first()
+    if (existingBooking) {
+      const existingPayment = await trx
+        .from('payments')
+        .where('booking_draft_id', draft.id)
+        .orderBy('created_at', 'desc')
+        .select(
+          'method',
+          'provider_transaction_id',
+          'status',
+          'refund_transaction_id',
+          'refunded_at'
+        )
+        .first()
+
+      return { booking: existingBooking as BookingRow, payment: existingPayment as PaymentRow }
+    }
+
+    if (draft.status !== 'pending_payment') {
+      throw new ApiHttpError(409, {
+        code: 'BOOKING_DRAFT_NOT_PAYABLE',
+        message: 'Ce draft ne peut plus être payé.',
+      })
+    }
+
+    const slot = await trx
+      .from('provider_availability_slots')
+      .where('provider_profile_id', draft.provider_profile_id)
+      .where('slot_start_at', draft.slot_start_at)
+      .forUpdate()
+      .first()
+
+    if (!slot || (slot.booking_id && Number(slot.booking_id) > 0)) {
+      await trx.from('booking_drafts').where('id', draft.id).update({
+        status: 'payment_failed',
+        updated_at: DateTime.utc().toJSDate(),
+      })
+      await trx.from('payments').where('provider_transaction_id', payment.id).update({
+        status: 'failed',
+        failure_reason: 'slot_unavailable',
+        updated_at: DateTime.utc().toJSDate(),
+      })
+
+      throw new ApiHttpError(409, {
+        code: 'BOOKING_SLOT_UNAVAILABLE',
+        message: "Le créneau n'est plus disponible.",
+      })
+    }
+
+    if (slot.booking_draft_id && Number(slot.booking_draft_id) !== Number(draft.id)) {
+      throw new ApiHttpError(409, {
+        code: 'BOOKING_SLOT_UNAVAILABLE',
+        message: "Le créneau n'est plus disponible.",
+      })
+    }
+
+    const confirmationCode = `UG-${randomUUID().slice(0, 5).toUpperCase()}`
+    const [createdBooking] = await trx
+      .table('bookings')
+      .insert({
+        draft_id: draft.id,
+        customer_user_id: draft.customer_user_id,
+        provider_profile_id: draft.provider_profile_id,
+        slot_start_at: draft.slot_start_at,
+        slot_end_at: draft.slot_end_at,
+        appointment_mode: draft.appointment_mode,
+        address: draft.address,
+        note: draft.note,
+        amount_cents: draft.amount_cents,
+        currency: draft.currency,
+        status: 'paid',
+        confirmation_code: confirmationCode,
+      })
+      .returning([
+        'id',
+        'provider_profile_id',
+        'slot_start_at',
+        'appointment_mode',
+        'address',
+        'note',
+        'amount_cents',
+        'currency',
+        'created_at',
+        'status',
+        'confirmation_code',
+      ])
+
+    await trx
+      .from('payments')
+      .where('provider_transaction_id', payment.id)
+      .update({
+        booking_id: createdBooking.id,
+        method,
+        status: 'succeeded',
+        provider_payload: JSON.stringify(payment),
+        updated_at: DateTime.utc().toJSDate(),
+      })
+
+    await trx.from('provider_availability_slots').where('id', slot.id).update({
+      is_booked: true,
+      booking_id: createdBooking.id,
+      booking_draft_id: null,
+      updated_at: DateTime.utc().toJSDate(),
+    })
+
+    await trx.from('booking_drafts').where('id', draft.id).update({
+      status: 'completed',
+      updated_at: DateTime.utc().toJSDate(),
+    })
+
+    return {
+      booking: createdBooking as BookingRow,
+      payment: {
+        method,
+        provider_transaction_id: payment.id,
+        status: 'succeeded' as PaymentStatus,
+      },
+    }
   }
 
   async createDraft({ auth, request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(createBookingDraftValidator)
     ensureAddressForHomeMode(payload.appointmentMode, payload.address ?? null)
+    await expireExpiredBookingDrafts()
 
     const slotDate = DateTime.fromISO(payload.slot, { zone: 'utc' })
     if (!slotDate.isValid) {
@@ -167,56 +471,73 @@ export default class BookingsController {
       )
     }
 
-    const slot = await db
-      .from('provider_availability_slots')
-      .where('provider_profile_id', payload.providerId)
-      .where('slot_start_at', slotDate.toJSDate())
-      .where('is_booked', false)
-      .first()
+    let draft: BookingDraftRow
+    try {
+      draft = await db.transaction(async (trx) => {
+        const slot = await trx
+          .from('provider_availability_slots')
+          .where('provider_profile_id', payload.providerId)
+          .where('slot_start_at', slotDate.toJSDate())
+          .forUpdate()
+          .first()
 
-    if (!slot) {
-      logBusinessEvent(
-        { logger },
-        'booking.draft.slot_unavailable',
-        { userId: user.id, providerProfileId: payload.providerId },
-        'warn'
-      )
-      return response.conflict(
-        errorResponse({
-          code: 'BOOKING_SLOT_UNAVAILABLE',
-          message: "Le créneau n'est plus disponible.",
-          details: { slot: payload.slot },
+        if (!slot || slot.is_booked || slot.booking_draft_id || slot.booking_id) {
+          logBusinessEvent(
+            { logger },
+            'booking.draft.slot_unavailable',
+            { userId: user.id, providerProfileId: payload.providerId },
+            'warn'
+          )
+          throw new ApiHttpError(409, {
+            code: 'BOOKING_SLOT_UNAVAILABLE',
+            message: "Le créneau n'est plus disponible.",
+            details: { slot: payload.slot },
+          })
+        }
+
+        const [createdDraft] = await trx
+          .table('booking_drafts')
+          .insert({
+            customer_user_id: user.id,
+            provider_profile_id: payload.providerId,
+            slot_start_at: slot.slot_start_at,
+            slot_end_at: slot.slot_end_at,
+            appointment_mode: payload.appointmentMode,
+            address: payload.address ?? null,
+            note: payload.note ?? null,
+            amount_cents: provider.price_from_cents ?? 0,
+            currency: provider.currency ?? 'EUR',
+            status: 'pending_payment',
+            expires_at: DateTime.utc().plus({ minutes: 30 }).toJSDate(),
+          })
+          .returning([
+            'id',
+            'provider_profile_id',
+            'slot_start_at',
+            'appointment_mode',
+            'address',
+            'note',
+            'amount_cents',
+            'currency',
+            'created_at',
+            'status',
+          ])
+
+        await trx.from('provider_availability_slots').where('id', slot.id).update({
+          is_booked: true,
+          booking_draft_id: createdDraft.id,
+          updated_at: DateTime.utc().toJSDate(),
         })
-      )
-    }
 
-    const [draft] = await db
-      .table('booking_drafts')
-      .insert({
-        customer_user_id: user.id,
-        provider_profile_id: payload.providerId,
-        slot_start_at: slot.slot_start_at,
-        slot_end_at: slot.slot_end_at,
-        appointment_mode: payload.appointmentMode,
-        address: payload.address ?? null,
-        note: payload.note ?? null,
-        amount_cents: provider.price_from_cents ?? 0,
-        currency: provider.currency ?? 'EUR',
-        status: 'pending_payment',
-        expires_at: DateTime.utc().plus({ minutes: 30 }).toJSDate(),
+        return createdDraft as BookingDraftRow
       })
-      .returning([
-        'id',
-        'provider_profile_id',
-        'slot_start_at',
-        'appointment_mode',
-        'address',
-        'note',
-        'amount_cents',
-        'currency',
-        'created_at',
-        'status',
-      ])
+    } catch (error) {
+      if (error instanceof ApiHttpError) {
+        return response.status(error.status).send(errorResponse(error.payload))
+      }
+
+      throw error
+    }
 
     logBusinessEvent({ logger }, 'booking.draft.created', {
       userId: user.id,
@@ -245,6 +566,7 @@ export default class BookingsController {
   async getDraft({ auth, params, response }: HttpContext) {
     const draftId = Number(params.draftId)
     const user = auth.getUserOrFail()
+    await expireExpiredBookingDrafts()
 
     if (!Number.isFinite(draftId) || draftId <= 0) {
       return response.badRequest(
@@ -289,14 +611,16 @@ export default class BookingsController {
   async createPaymentIntent({ auth, request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(paymentIntentValidator)
     const user = auth.getUserOrFail()
+    await expireExpiredBookingDrafts()
+    const idempotencyKey = request.header('Idempotency-Key') ?? `payment:${randomUUID()}`
 
     try {
       ensureMollieConfigured()
-      const draft = await db
+      const draft = (await db
         .from('booking_drafts')
         .where('id', payload.draftId)
         .where('customer_user_id', user.id)
-        .first()
+        .first()) as BookingDraftRow | null
 
       if (!draft) {
         logBusinessEvent(
@@ -309,6 +633,25 @@ export default class BookingsController {
           errorResponse({
             code: 'BOOKING_DRAFT_NOT_FOUND',
             message: 'Draft de réservation introuvable',
+          })
+        )
+      }
+
+      const existingPayment = await db
+        .from('payments')
+        .where('idempotency_key', idempotencyKey)
+        .where('booking_draft_id', payload.draftId)
+        .first()
+
+      if (existingPayment) {
+        return response.ok(
+          dataResponse({
+            provider: 'mollie',
+            paymentId: existingPayment.provider_transaction_id,
+            checkoutUrl: existingPayment.checkout_url ?? null,
+            status: existingPayment.status,
+            amountCents: Number(draft.amount_cents),
+            currency: String(draft.currency ?? 'EUR').toUpperCase(),
           })
         )
       }
@@ -350,13 +693,31 @@ export default class BookingsController {
           })
       )
 
+      await db.transaction(async (trx) => {
+        const lockedDraft = (await trx
+          .from('booking_drafts')
+          .where('id', draft.id)
+          .where('customer_user_id', user.id)
+          .forUpdate()
+          .first()) as BookingDraftRow | null
+
+        if (!lockedDraft) {
+          throw new ApiHttpError(404, {
+            code: 'BOOKING_DRAFT_NOT_FOUND',
+            message: 'Draft de réservation introuvable',
+          })
+        }
+
+        await this.syncPaymentFromMollie(trx, payment, lockedDraft, payload.method, idempotencyKey)
+      })
+
       logBusinessEvent({ logger }, 'payment.intent.created', {
         userId: user.id,
         draftId: Number(draft.id),
         providerProfileId: Number(draft.provider_profile_id),
         paymentProvider: 'mollie',
         paymentMethod: payload.method,
-        paymentStatus: payment.status,
+        paymentStatus: mapMolliePaymentStatus(payment.status),
         amountCents: Number(draft.amount_cents),
         currency: String(draft.currency ?? 'EUR').toUpperCase(),
       })
@@ -366,7 +727,7 @@ export default class BookingsController {
           provider: 'mollie',
           paymentId: payment.id,
           checkoutUrl: payment._links?.checkout?.href ?? null,
-          status: payment.status,
+          status: mapMolliePaymentStatus(payment.status),
           amountCents: Number(draft.amount_cents),
           currency: String(draft.currency ?? 'EUR').toUpperCase(),
         })
@@ -380,6 +741,96 @@ export default class BookingsController {
           'warn'
         )
         return response.status(error.status).send(errorResponse(error.payload))
+      }
+
+      throw error
+    }
+  }
+
+  async mollieWebhook({ request, response, logger }: HttpContext) {
+    const paymentId = String(request.input('id') ?? '').trim()
+
+    if (!paymentId) {
+      logBusinessEvent({ logger }, 'payment.webhook.invalid_payload', {}, 'warn')
+      return response.badRequest(
+        errorResponse({
+          code: 'PAYMENT_WEBHOOK_INVALID_PAYLOAD',
+          message: 'Identifiant de paiement manquant.',
+        })
+      )
+    }
+
+    try {
+      ensureMollieConfigured()
+      const molliePayment = await withSpan(
+        'payment.mollie.webhook.get',
+        { 'payment.provider': 'mollie', 'payment.id': paymentId },
+        () => getMolliePayment(paymentId)
+      )
+
+      const result = await db.transaction(async (trx) => {
+        const synced = await this.syncPaymentFromMollie(trx, molliePayment)
+        const paymentStatus = mapMolliePaymentStatus(molliePayment.status)
+
+        if (molliePayment.status === 'paid') {
+          const completed = await this.completePaidDraft(
+            trx,
+            synced.draft,
+            molliePayment,
+            synced.method
+          )
+
+          return {
+            action: 'completed',
+            bookingId: Number(completed.booking.id),
+            draftId: Number(synced.draft.id),
+            paymentStatus,
+          }
+        }
+
+        if (paymentStatus === 'failed') {
+          await trx.from('booking_drafts').where('id', synced.draft.id).update({
+            status: 'payment_failed',
+            updated_at: DateTime.utc().toJSDate(),
+          })
+          await trx
+            .from('provider_availability_slots')
+            .where('booking_draft_id', synced.draft.id)
+            .whereNull('booking_id')
+            .update({
+              is_booked: false,
+              booking_draft_id: null,
+              updated_at: DateTime.utc().toJSDate(),
+            })
+        }
+
+        return {
+          action: 'synced',
+          bookingId: null,
+          draftId: Number(synced.draft.id),
+          paymentStatus,
+        }
+      })
+
+      logBusinessEvent({ logger }, 'payment.webhook.processed', {
+        paymentProvider: 'mollie',
+        paymentId,
+        action: result.action,
+        draftId: result.draftId,
+        bookingId: result.bookingId,
+        paymentStatus: result.paymentStatus,
+      })
+
+      return response.ok(dataResponse({ received: true }))
+    } catch (error) {
+      if (error instanceof ApiHttpError) {
+        logBusinessEvent(
+          { logger },
+          'payment.webhook.rejected',
+          { paymentProvider: 'mollie', paymentId, code: error.payload.code },
+          'warn'
+        )
+        return response.ok(dataResponse({ received: true }))
       }
 
       throw error
@@ -408,12 +859,12 @@ export default class BookingsController {
         () => getMolliePayment(payload.paymentId)
       )
       const booking = await db.transaction(async (trx) => {
-        const draft = await trx
+        const draft = (await trx
           .from('booking_drafts')
           .where('id', draftId)
           .where('customer_user_id', user.id)
           .forUpdate()
-          .first()
+          .first()) as BookingDraftRow | null
 
         if (!draft) {
           throw new ApiHttpError(404, {
@@ -422,18 +873,7 @@ export default class BookingsController {
           })
         }
 
-        try {
-          assertPayableDraft(draft)
-        } catch (error) {
-          if (error instanceof ApiHttpError && error.payload.code === 'BOOKING_DRAFT_EXPIRED') {
-            await trx.from('booking_drafts').where('id', draft.id).update({
-              status: 'expired',
-              updated_at: DateTime.utc().toJSDate(),
-            })
-          }
-
-          throw error
-        }
+        const synced = await this.syncPaymentFromMollie(trx, molliePayment, draft, payload.method)
 
         if (molliePayment.status !== 'paid') {
           await trx.from('booking_drafts').where('id', draft.id).update({
@@ -460,125 +900,7 @@ export default class BookingsController {
           })
         }
 
-        const metadata = molliePayment.metadata ?? {}
-        if (
-          Math.round(Number(molliePayment.amount.value) * 100) !== Number(draft.amount_cents) ||
-          molliePayment.amount.currency.toUpperCase() !== String(draft.currency).toUpperCase() ||
-          metadata.draftId !== String(draft.id) ||
-          metadata.customerUserId !== String(user.id)
-        ) {
-          await trx.from('booking_drafts').where('id', draft.id).update({
-            status: 'payment_failed',
-            updated_at: DateTime.utc().toJSDate(),
-          })
-
-          logBusinessEvent(
-            { logger },
-            'payment.checkout.mismatch',
-            {
-              userId: user.id,
-              draftId: Number(draft.id),
-              paymentProvider: 'mollie',
-              paymentStatus: molliePayment.status,
-            },
-            'error'
-          )
-
-          throw new ApiHttpError(409, {
-            code: 'PAYMENT_INTENT_MISMATCH',
-            message: 'Le paiement ne correspond pas à la réservation.',
-          })
-        }
-
-        const slot = await trx
-          .from('provider_availability_slots')
-          .where('provider_profile_id', draft.provider_profile_id)
-          .where('slot_start_at', draft.slot_start_at)
-          .forUpdate()
-          .first()
-
-        if (!slot || slot.is_booked) {
-          await trx.from('booking_drafts').where('id', draft.id).update({
-            status: 'payment_failed',
-            updated_at: DateTime.utc().toJSDate(),
-          })
-
-          logBusinessEvent(
-            { logger },
-            'booking.checkout.slot_unavailable',
-            {
-              userId: user.id,
-              draftId: Number(draft.id),
-              providerProfileId: Number(draft.provider_profile_id),
-            },
-            'warn'
-          )
-
-          throw new ApiHttpError(409, {
-            code: 'BOOKING_SLOT_UNAVAILABLE',
-            message: "Le créneau n'est plus disponible.",
-          })
-        }
-
-        const confirmationCode = `UG-${randomUUID().slice(0, 5).toUpperCase()}`
-        const [createdBooking] = await trx
-          .table('bookings')
-          .insert({
-            draft_id: draft.id,
-            customer_user_id: user.id,
-            provider_profile_id: draft.provider_profile_id,
-            slot_start_at: draft.slot_start_at,
-            slot_end_at: draft.slot_end_at,
-            appointment_mode: draft.appointment_mode,
-            address: draft.address,
-            note: draft.note,
-            amount_cents: draft.amount_cents,
-            currency: draft.currency,
-            status: 'paid',
-            confirmation_code: confirmationCode,
-          })
-          .returning([
-            'id',
-            'provider_profile_id',
-            'slot_start_at',
-            'appointment_mode',
-            'address',
-            'note',
-            'amount_cents',
-            'currency',
-            'created_at',
-            'status',
-            'confirmation_code',
-          ])
-
-        await trx.table('payments').insert({
-          booking_draft_id: draft.id,
-          booking_id: createdBooking.id,
-          method: payload.method,
-          provider: 'mollie',
-          provider_transaction_id: molliePayment.id,
-          provider_reference: molliePayment._links?.self?.href ?? null,
-          status: 'succeeded',
-        })
-
-        await trx.from('provider_availability_slots').where('id', slot.id).update({
-          is_booked: true,
-          booking_id: createdBooking.id,
-          updated_at: DateTime.utc().toJSDate(),
-        })
-
-        await trx.from('booking_drafts').where('id', draft.id).update({
-          status: 'completed',
-          updated_at: DateTime.utc().toJSDate(),
-        })
-
-        return {
-          booking: createdBooking,
-          payment: {
-            method: payload.method,
-            provider_transaction_id: molliePayment.id,
-          },
-        }
+        return this.completePaidDraft(trx, synced.draft, molliePayment, synced.method, user.id)
       })
 
       logBusinessEvent({ logger }, 'booking.checkout.succeeded', {
@@ -801,6 +1123,7 @@ export default class BookingsController {
             await trx.from('provider_availability_slots').where('id', oldSlot.id).update({
               is_booked: false,
               booking_id: null,
+              booking_draft_id: null,
               updated_at: DateTime.utc().toJSDate(),
             })
           }
@@ -808,6 +1131,7 @@ export default class BookingsController {
           await trx.from('provider_availability_slots').where('id', newSlot.id).update({
             is_booked: true,
             booking_id: booking.id,
+            booking_draft_id: null,
             updated_at: DateTime.utc().toJSDate(),
           })
 
@@ -848,7 +1172,7 @@ export default class BookingsController {
     }
   }
 
-  async cancel({ auth, params, response }: HttpContext) {
+  async cancel({ auth, params, response, logger }: HttpContext) {
     const bookingId = Number(params.bookingId)
     const user = auth.getUserOrFail()
 
@@ -862,47 +1186,135 @@ export default class BookingsController {
     }
 
     try {
+      const booking = await db
+        .from('bookings')
+        .where('id', bookingId)
+        .where('customer_user_id', user.id)
+        .first()
+
+      if (!booking) {
+        throw new ApiHttpError(404, {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Réservation introuvable',
+        })
+      }
+
+      if (booking.status === 'cancelled') {
+        throw new ApiHttpError(409, {
+          code: 'BOOKING_ALREADY_CANCELLED',
+          message: 'Cette réservation est déjà annulée.',
+        })
+      }
+
+      const refundEligibility = getRefundEligibility(booking.slot_start_at)
+      if (!refundEligibility.canCancel) {
+        throw new ApiHttpError(409, {
+          code: 'BOOKING_CANCEL_WINDOW_CLOSED',
+          message: 'Ce rendez-vous ne peut plus être annulé depuis l’application.',
+        })
+      }
+
+      const payment = await db
+        .from('payments')
+        .where('booking_id', booking.id)
+        .orderBy('created_at', 'desc')
+        .first()
+
+      let refundId: string | null = null
+      if (
+        refundEligibility.refundEligible &&
+        payment?.provider === 'mollie' &&
+        payment.status === 'succeeded' &&
+        payment.provider_transaction_id
+      ) {
+        ensureMollieConfigured()
+        const refund = await withSpan(
+          'payment.mollie.refund',
+          {
+            'payment.provider': 'mollie',
+            'payment.id': payment.provider_transaction_id,
+            'booking.id': Number(booking.id),
+          },
+          () =>
+            createMollieRefund({
+              paymentId: payment.provider_transaction_id,
+              amountCents: Number(booking.amount_cents),
+              currency: String(booking.currency ?? 'EUR'),
+              description: `Remboursement Upper Glam réservation ${booking.id}`,
+              metadata: {
+                bookingId: String(booking.id),
+                customerUserId: String(user.id),
+              },
+            })
+        )
+
+        refundId = refund.id
+      }
+
       const cancelled = await db.transaction(async (trx) => {
-        const booking = await trx
+        const lockedBooking = await trx
           .from('bookings')
           .where('id', bookingId)
           .where('customer_user_id', user.id)
           .forUpdate()
           .first()
 
-        if (!booking) {
+        if (!lockedBooking) {
           throw new ApiHttpError(404, {
             code: 'BOOKING_NOT_FOUND',
             message: 'Réservation introuvable',
           })
         }
 
-        if (booking.status === 'cancelled') {
+        if (lockedBooking.status === 'cancelled') {
           throw new ApiHttpError(409, {
             code: 'BOOKING_ALREADY_CANCELLED',
             message: 'Cette réservation est déjà annulée.',
           })
         }
 
-        await trx.from('bookings').where('id', booking.id).update({
+        await trx.from('bookings').where('id', lockedBooking.id).update({
           status: 'cancelled',
           cancelled_at: DateTime.utc().toJSDate(),
           updated_at: DateTime.utc().toJSDate(),
         })
 
-        await trx.from('provider_availability_slots').where('booking_id', booking.id).update({
+        await trx.from('provider_availability_slots').where('booking_id', lockedBooking.id).update({
           is_booked: false,
           booking_id: null,
+          booking_draft_id: null,
           updated_at: DateTime.utc().toJSDate(),
         })
 
-        return Number(booking.id)
+        if (refundId && payment) {
+          await trx.from('payments').where('id', payment.id).update({
+            status: 'refunded',
+            refund_transaction_id: refundId,
+            refunded_at: DateTime.utc().toJSDate(),
+            updated_at: DateTime.utc().toJSDate(),
+          })
+        }
+
+        return {
+          id: Number(lockedBooking.id),
+          refundEligible: refundEligibility.refundEligible,
+          refundId,
+        }
+      })
+
+      logBusinessEvent({ logger }, 'booking.cancelled', {
+        userId: user.id,
+        bookingId: cancelled.id,
+        refundEligible: cancelled.refundEligible,
+        refundCreated: Boolean(cancelled.refundId),
       })
 
       return response.ok(
         dataResponse({
-          id: cancelled,
+          id: cancelled.id,
           status: 'cancelled',
+          refundEligible: cancelled.refundEligible,
+          refundTransactionId: cancelled.refundId,
         })
       )
     } catch (error) {
