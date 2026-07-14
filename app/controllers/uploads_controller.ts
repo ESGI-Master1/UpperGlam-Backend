@@ -1,6 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import db from '@adonisjs/lucid/services/db'
 import { minioStorage } from '#infrastructure/integrations/storage/minio_storage'
+import { canReadMediaAsset } from '#services/media_assets'
 import { dataResponse, errorResponse } from '#services/http'
 import { uploadCommitValidator, uploadPresignValidator } from '#validators/mobile'
 
@@ -138,9 +139,7 @@ export default class UploadsController {
       )
     }
 
-    const isOwner = Number(media.owner_user_id) === user.id
-    const isPublic = media.visibility === 'public'
-    if (!isOwner && !isPublic) {
+    if (!canReadMediaAsset(media, user.id)) {
       return response.forbidden(
         errorResponse({
           code: 'MEDIA_FORBIDDEN',

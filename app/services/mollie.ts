@@ -54,7 +54,7 @@ function getMollieApiKey() {
   return env.get('MOLLIE_API_KEY')
 }
 
-function formatMollieAmount(amountCents: number) {
+export function formatMollieAmount(amountCents: number) {
   return (amountCents / 100).toFixed(2)
 }
 

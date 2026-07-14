@@ -1,6 +1,15 @@
 import db from '@adonisjs/lucid/services/db'
 import { minioStorage } from '#infrastructure/integrations/storage/minio_storage'
 
+export type MediaAssetAccessRow = {
+  owner_user_id: number | string
+  visibility: string
+}
+
+export function canReadMediaAsset(media: MediaAssetAccessRow, userId: number) {
+  return media.visibility === 'public' || Number(media.owner_user_id) === userId
+}
+
 export async function getSignedUrlsByMediaIds(mediaIds: number[]) {
   const uniqueIds = [...new Set(mediaIds.filter((value) => Number.isFinite(value) && value > 0))]
   const urlById = new Map<number, string>()
