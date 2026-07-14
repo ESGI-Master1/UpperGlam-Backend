@@ -3,7 +3,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
-import { getStripeClient } from '#services/stripe'
+import { createMolliePayment, getMolliePayment, isMollieConfigured } from '#services/mollie'
 import {
   checkoutDraftValidator,
   createBookingDraftValidator,
@@ -86,16 +86,17 @@ function ensureFutureBooking(slotStartAt: Date | string) {
   }
 }
 
-function getConfiguredStripeClient() {
-  const stripe = getStripeClient()
-  if (!stripe) {
+function ensureMollieConfigured() {
+  if (!isMollieConfigured()) {
     throw new ApiHttpError(503, {
       code: 'PAYMENT_PROVIDER_NOT_CONFIGURED',
       message: 'Le fournisseur de paiement n’est pas configuré.',
     })
   }
+}
 
-  return stripe
+function toMollieMethod(method: 'apple_pay' | 'google_pay') {
+  return method === 'apple_pay' ? 'applepay' : 'googlepay'
 }
 
 function assertPayableDraft(draft: {
@@ -275,7 +276,7 @@ export default class BookingsController {
     const user = auth.getUserOrFail()
 
     try {
-      const stripe = getConfiguredStripeClient()
+      ensureMollieConfigured()
       const draft = await db
         .from('booking_drafts')
         .where('id', payload.draftId)
@@ -304,35 +305,27 @@ export default class BookingsController {
         throw error
       }
 
-      const paymentIntent = await stripe.paymentIntents.create(
-        {
-          amount: Number(draft.amount_cents),
-          currency: String(draft.currency ?? 'EUR').toLowerCase(),
-          capture_method: 'automatic',
-          automatic_payment_methods: {
-            enabled: true,
-            allow_redirects: 'never',
-          },
-          metadata: {
-            draftId: String(draft.id),
-            customerUserId: String(user.id),
-            providerProfileId: String(draft.provider_profile_id),
-            method: payload.method,
-          },
+      const payment = await createMolliePayment({
+        amountCents: Number(draft.amount_cents),
+        currency: String(draft.currency ?? 'EUR'),
+        description: `Upper Glam réservation ${draft.id}`,
+        method: toMollieMethod(payload.method),
+        metadata: {
+          draftId: String(draft.id),
+          customerUserId: String(user.id),
+          providerProfileId: String(draft.provider_profile_id),
+          method: payload.method,
         },
-        {
-          idempotencyKey: `booking_draft_${draft.id}_${payload.method}`,
-        }
-      )
+      })
 
       return response.ok(
         dataResponse({
-          provider: 'stripe',
-          paymentIntentId: paymentIntent.id,
-          clientSecret: paymentIntent.client_secret,
-          status: paymentIntent.status,
-          amountCents: paymentIntent.amount,
-          currency: paymentIntent.currency.toUpperCase(),
+          provider: 'mollie',
+          paymentId: payment.id,
+          checkoutUrl: payment._links?.checkout?.href ?? null,
+          status: payment.status,
+          amountCents: Number(draft.amount_cents),
+          currency: String(draft.currency ?? 'EUR').toUpperCase(),
         })
       )
     } catch (error) {
@@ -359,8 +352,8 @@ export default class BookingsController {
     }
 
     try {
-      const stripe = getConfiguredStripeClient()
-      const paymentIntent = await stripe.paymentIntents.retrieve(payload.paymentIntentId)
+      ensureMollieConfigured()
+      const molliePayment = await getMolliePayment(payload.paymentId)
       const booking = await db.transaction(async (trx) => {
         const draft = await trx
           .from('booking_drafts')
@@ -389,7 +382,7 @@ export default class BookingsController {
           throw error
         }
 
-        if (paymentIntent.status !== 'succeeded') {
+        if (molliePayment.status !== 'paid') {
           await trx.from('booking_drafts').where('id', draft.id).update({
             status: 'payment_failed',
             updated_at: DateTime.utc().toJSDate(),
@@ -398,15 +391,16 @@ export default class BookingsController {
           throw new ApiHttpError(409, {
             code: 'PAYMENT_NOT_CONFIRMED',
             message: 'Le paiement n’a pas été confirmé par le PSP.',
-            details: { status: paymentIntent.status },
+            details: { status: molliePayment.status },
           })
         }
 
+        const metadata = molliePayment.metadata ?? {}
         if (
-          paymentIntent.amount !== Number(draft.amount_cents) ||
-          paymentIntent.currency.toUpperCase() !== String(draft.currency).toUpperCase() ||
-          paymentIntent.metadata.draftId !== String(draft.id) ||
-          paymentIntent.metadata.customerUserId !== String(user.id)
+          Math.round(Number(molliePayment.amount.value) * 100) !== Number(draft.amount_cents) ||
+          molliePayment.amount.currency.toUpperCase() !== String(draft.currency).toUpperCase() ||
+          metadata.draftId !== String(draft.id) ||
+          metadata.customerUserId !== String(user.id)
         ) {
           await trx.from('booking_drafts').where('id', draft.id).update({
             status: 'payment_failed',
@@ -473,9 +467,9 @@ export default class BookingsController {
           booking_draft_id: draft.id,
           booking_id: createdBooking.id,
           method: payload.method,
-          provider: 'stripe',
-          provider_transaction_id: paymentIntent.id,
-          provider_reference: paymentIntent.client_secret,
+          provider: 'mollie',
+          provider_transaction_id: molliePayment.id,
+          provider_reference: molliePayment._links?.self?.href ?? null,
           status: 'succeeded',
         })
 
@@ -494,7 +488,7 @@ export default class BookingsController {
           booking: createdBooking,
           payment: {
             method: payload.method,
-            provider_transaction_id: paymentIntent.id,
+            provider_transaction_id: molliePayment.id,
           },
         }
       })

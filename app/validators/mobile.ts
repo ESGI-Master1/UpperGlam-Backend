@@ -13,7 +13,7 @@ export const createBookingDraftValidator = vine.compile(
 export const checkoutDraftValidator = vine.compile(
   vine.object({
     method: vine.enum(['apple_pay', 'google_pay'] as const),
-    paymentIntentId: vine.string().trim().minLength(8).maxLength(255),
+    paymentId: vine.string().trim().minLength(4).maxLength(255),
   })
 )
 

@@ -40,5 +40,7 @@ export default await Env.create(new URL('../', import.meta.url), {
   MINIO_SECRET_KEY: Env.schema.string.optional(),
   MINIO_BUCKET_USER_IMAGES: Env.schema.string.optional(),
   MINIO_REGION: Env.schema.string.optional(),
-  STRIPE_SECRET_KEY: Env.schema.string.optional(),
+  MOLLIE_API_KEY: Env.schema.string.optional(),
+  MOLLIE_REDIRECT_URL: Env.schema.string.optional(),
+  MOLLIE_WEBHOOK_URL: Env.schema.string.optional(),
 })
