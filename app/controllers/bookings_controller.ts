@@ -3,6 +3,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
+import { getStripeClient } from '#services/stripe'
 import {
   checkoutDraftValidator,
   createBookingDraftValidator,
@@ -14,6 +15,7 @@ type BookingRow = {
   id: number
   provider_profile_id: number
   slot_start_at: Date
+  slot_end_at?: Date
   appointment_mode: 'home' | 'institute'
   address: string | null
   note: string | null
@@ -23,6 +25,11 @@ type BookingRow = {
   status: 'paid' | 'cancelled'
   confirmation_code: string
 }
+
+type PaymentRow = {
+  method?: string | null
+  provider_transaction_id?: string | null
+} | null
 
 function toIso(value: Date | string | null | undefined) {
   if (!value) {
@@ -36,10 +43,7 @@ function toIso(value: Date | string | null | undefined) {
   return new Date(value).toISOString()
 }
 
-function buildBookingDto(
-  booking: BookingRow,
-  payment?: { method?: string | null; provider_transaction_id?: string | null } | null
-) {
+function buildBookingDto(booking: BookingRow, payment?: PaymentRow) {
   return {
     id: Number(booking.id),
     providerId: Number(booking.provider_profile_id),
@@ -78,6 +82,50 @@ function ensureFutureBooking(slotStartAt: Date | string) {
     throw new ApiHttpError(409, {
       code: 'BOOKING_NOT_MODIFIABLE',
       message: 'Ce rendez-vous n’est plus modifiable.',
+    })
+  }
+}
+
+function getConfiguredStripeClient() {
+  const stripe = getStripeClient()
+  if (!stripe) {
+    throw new ApiHttpError(503, {
+      code: 'PAYMENT_PROVIDER_NOT_CONFIGURED',
+      message: 'Le fournisseur de paiement n’est pas configuré.',
+    })
+  }
+
+  return stripe
+}
+
+function assertPayableDraft(draft: {
+  status: string
+  expires_at: Date | string
+  amount_cents: string | number
+}) {
+  if (draft.status !== 'pending_payment') {
+    throw new ApiHttpError(409, {
+      code: 'BOOKING_DRAFT_NOT_PAYABLE',
+      message: 'Ce draft ne peut plus être payé.',
+    })
+  }
+
+  const expiresAt = DateTime.fromJSDate(
+    draft.expires_at instanceof Date ? draft.expires_at : new Date(draft.expires_at),
+    { zone: 'utc' }
+  )
+
+  if (expiresAt <= DateTime.utc()) {
+    throw new ApiHttpError(409, {
+      code: 'BOOKING_DRAFT_EXPIRED',
+      message: 'Le draft de réservation a expiré.',
+    })
+  }
+
+  if (Number(draft.amount_cents) <= 0) {
+    throw new ApiHttpError(422, {
+      code: 'PAYMENT_AMOUNT_INVALID',
+      message: 'Le montant de la réservation est invalide.',
     })
   }
 }
@@ -222,6 +270,80 @@ export default class BookingsController {
     )
   }
 
+  async createPaymentIntent({ auth, request, response }: HttpContext) {
+    const payload = await request.validateUsing(paymentIntentValidator)
+    const user = auth.getUserOrFail()
+
+    try {
+      const stripe = getConfiguredStripeClient()
+      const draft = await db
+        .from('booking_drafts')
+        .where('id', payload.draftId)
+        .where('customer_user_id', user.id)
+        .first()
+
+      if (!draft) {
+        return response.notFound(
+          errorResponse({
+            code: 'BOOKING_DRAFT_NOT_FOUND',
+            message: 'Draft de réservation introuvable',
+          })
+        )
+      }
+
+      try {
+        assertPayableDraft(draft)
+      } catch (error) {
+        if (error instanceof ApiHttpError && error.payload.code === 'BOOKING_DRAFT_EXPIRED') {
+          await db.from('booking_drafts').where('id', draft.id).update({
+            status: 'expired',
+            updated_at: DateTime.utc().toJSDate(),
+          })
+        }
+
+        throw error
+      }
+
+      const paymentIntent = await stripe.paymentIntents.create(
+        {
+          amount: Number(draft.amount_cents),
+          currency: String(draft.currency ?? 'EUR').toLowerCase(),
+          capture_method: 'automatic',
+          automatic_payment_methods: {
+            enabled: true,
+            allow_redirects: 'never',
+          },
+          metadata: {
+            draftId: String(draft.id),
+            customerUserId: String(user.id),
+            providerProfileId: String(draft.provider_profile_id),
+            method: payload.method,
+          },
+        },
+        {
+          idempotencyKey: `booking_draft_${draft.id}_${payload.method}`,
+        }
+      )
+
+      return response.ok(
+        dataResponse({
+          provider: 'stripe',
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret,
+          status: paymentIntent.status,
+          amountCents: paymentIntent.amount,
+          currency: paymentIntent.currency.toUpperCase(),
+        })
+      )
+    } catch (error) {
+      if (error instanceof ApiHttpError) {
+        return response.status(error.status).send(errorResponse(error.payload))
+      }
+
+      throw error
+    }
+  }
+
   async checkoutDraft({ auth, params, request, response }: HttpContext) {
     const draftId = Number(params.draftId)
     const payload = await request.validateUsing(checkoutDraftValidator)
@@ -237,6 +359,8 @@ export default class BookingsController {
     }
 
     try {
+      const stripe = getConfiguredStripeClient()
+      const paymentIntent = await stripe.paymentIntents.retrieve(payload.paymentIntentId)
       const booking = await db.transaction(async (trx) => {
         const draft = await trx
           .from('booking_drafts')
@@ -252,27 +376,46 @@ export default class BookingsController {
           })
         }
 
-        if (draft.status !== 'pending_payment') {
-          throw new ApiHttpError(409, {
-            code: 'BOOKING_DRAFT_NOT_PAYABLE',
-            message: 'Ce draft ne peut plus être payé.',
-          })
+        try {
+          assertPayableDraft(draft)
+        } catch (error) {
+          if (error instanceof ApiHttpError && error.payload.code === 'BOOKING_DRAFT_EXPIRED') {
+            await trx.from('booking_drafts').where('id', draft.id).update({
+              status: 'expired',
+              updated_at: DateTime.utc().toJSDate(),
+            })
+          }
+
+          throw error
         }
 
-        const expiresAt = DateTime.fromJSDate(
-          draft.expires_at instanceof Date ? draft.expires_at : new Date(draft.expires_at),
-          { zone: 'utc' }
-        )
-
-        if (expiresAt <= DateTime.utc()) {
+        if (paymentIntent.status !== 'succeeded') {
           await trx.from('booking_drafts').where('id', draft.id).update({
-            status: 'expired',
+            status: 'payment_failed',
             updated_at: DateTime.utc().toJSDate(),
           })
 
           throw new ApiHttpError(409, {
-            code: 'BOOKING_DRAFT_EXPIRED',
-            message: 'Le draft de réservation a expiré.',
+            code: 'PAYMENT_NOT_CONFIRMED',
+            message: 'Le paiement n’a pas été confirmé par le PSP.',
+            details: { status: paymentIntent.status },
+          })
+        }
+
+        if (
+          paymentIntent.amount !== Number(draft.amount_cents) ||
+          paymentIntent.currency.toUpperCase() !== String(draft.currency).toUpperCase() ||
+          paymentIntent.metadata.draftId !== String(draft.id) ||
+          paymentIntent.metadata.customerUserId !== String(user.id)
+        ) {
+          await trx.from('booking_drafts').where('id', draft.id).update({
+            status: 'payment_failed',
+            updated_at: DateTime.utc().toJSDate(),
+          })
+
+          throw new ApiHttpError(409, {
+            code: 'PAYMENT_INTENT_MISMATCH',
+            message: 'Le paiement ne correspond pas à la réservation.',
           })
         }
 
@@ -326,14 +469,13 @@ export default class BookingsController {
             'confirmation_code',
           ])
 
-        const transactionId = `txn_${randomUUID().replace(/-/g, '').slice(0, 18)}`
         await trx.table('payments').insert({
           booking_draft_id: draft.id,
           booking_id: createdBooking.id,
           method: payload.method,
-          provider: 'wallet',
-          provider_transaction_id: transactionId,
-          provider_reference: payload.platformPayToken.slice(0, 64),
+          provider: 'stripe',
+          provider_transaction_id: paymentIntent.id,
+          provider_reference: paymentIntent.client_secret,
           status: 'succeeded',
         })
 
@@ -352,7 +494,7 @@ export default class BookingsController {
           booking: createdBooking,
           payment: {
             method: payload.method,
-            provider_transaction_id: transactionId,
+            provider_transaction_id: paymentIntent.id,
           },
         }
       })
@@ -367,46 +509,6 @@ export default class BookingsController {
 
       throw error
     }
-  }
-
-  async createPaymentIntent({ auth, request, response }: HttpContext) {
-    const payload = await request.validateUsing(paymentIntentValidator)
-    const user = auth.getUserOrFail()
-
-    const draft = await db
-      .from('booking_drafts')
-      .where('id', payload.draftId)
-      .where('customer_user_id', user.id)
-      .first()
-
-    if (!draft) {
-      return response.notFound(
-        errorResponse({
-          code: 'BOOKING_DRAFT_NOT_FOUND',
-          message: 'Draft de réservation introuvable',
-        })
-      )
-    }
-
-    const transactionId = `txn_${randomUUID().replace(/-/g, '').slice(0, 18)}`
-    const providerReference = payload.platformPayToken.slice(0, 64)
-
-    await db.table('payments').insert({
-      booking_draft_id: draft.id,
-      method: payload.method,
-      provider: 'wallet',
-      provider_transaction_id: transactionId,
-      provider_reference: providerReference,
-      status: 'succeeded',
-    })
-
-    return response.ok(
-      dataResponse({
-        status: 'succeeded',
-        transactionId,
-        providerReference,
-      })
-    )
   }
 
   async me({ auth, request, response }: HttpContext) {
@@ -467,10 +569,7 @@ export default class BookingsController {
       .orderBy('created_at', 'desc')
       .select('booking_id', 'method', 'provider_transaction_id')
 
-    const paymentByBooking = new Map<
-      number,
-      { method: string | null; provider_transaction_id: string | null }
-    >()
+    const paymentByBooking = new Map<number, PaymentRow>()
     for (const payment of payments) {
       const bookingId = Number(payment.booking_id)
       if (!paymentByBooking.has(bookingId)) {
