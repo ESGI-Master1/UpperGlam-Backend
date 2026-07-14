@@ -79,6 +79,16 @@ export const createProviderAvailabilityClosureValidator = vine.compile(
   })
 )
 
+export const providerServiceValidator = vine.compile(
+  vine.object({
+    name: vine.string().trim().minLength(2).maxLength(150),
+    durationMinutes: vine.number().min(5).max(720),
+    priceCents: vine.number().min(0).max(1_000_000),
+    category: vine.string().trim().minLength(2).maxLength(120),
+    isActive: vine.boolean().optional(),
+  })
+)
+
 export const providerBookingRejectValidator = vine.compile(
   vine.object({
     reason: vine.string().trim().minLength(3).maxLength(1000),

@@ -133,6 +133,10 @@ router
           ProvidersMeController,
           'deleteAvailabilityClosure',
         ])
+        router.get('/providers/me/services', [ProvidersMeController, 'services'])
+        router.post('/providers/me/services', [ProvidersMeController, 'createService'])
+        router.put('/providers/me/services/:serviceId', [ProvidersMeController, 'updateService'])
+        router.delete('/providers/me/services/:serviceId', [ProvidersMeController, 'deleteService'])
         router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
       })
       .use(middleware.provider())

@@ -10,6 +10,7 @@ import {
   createProviderAvailabilitySlotValidator,
   providerBookingProposeSlotValidator,
   providerBookingRejectValidator,
+  providerServiceValidator,
   providerBookingStatusValidator,
   updateProviderProfileValidator,
 } from '#validators/mobile'
@@ -107,6 +108,17 @@ function toProviderAvailabilityClosureDto(closure: Record<string, unknown>) {
 
 function isValidTimeRange(startTime: string, endTime: string) {
   return startTime < endTime
+}
+
+function toProviderServiceDto(service: Record<string, unknown>) {
+  return {
+    id: Number(service.id),
+    name: service.name,
+    durationMinutes: Number(service.duration_minutes),
+    priceCents: Number(service.price_cents),
+    category: service.category,
+    isActive: Boolean(service.is_active),
+  }
 }
 
 export default class ProvidersMeController {
@@ -931,6 +943,157 @@ export default class ProvidersMeController {
       userId: user.id,
       providerProfileId: provider.id,
       closureId,
+    })
+
+    return response.ok(dataResponse({ deleted: true }))
+  }
+
+  async services({ auth, response }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const services = await db
+      .from('provider_services')
+      .where('provider_profile_id', provider.id)
+      .orderBy('category', 'asc')
+      .orderBy('name', 'asc')
+      .select('id', 'name', 'duration_minutes', 'price_cents', 'category', 'is_active')
+
+    return response.ok(dataResponse(services.map((service) => toProviderServiceDto(service))))
+  }
+
+  async createService({ auth, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(providerServiceValidator)
+
+    try {
+      const [service] = await db
+        .table('provider_services')
+        .insert({
+          provider_profile_id: provider.id,
+          name: payload.name,
+          duration_minutes: payload.durationMinutes,
+          price_cents: payload.priceCents,
+          category: payload.category,
+          is_active: payload.isActive ?? true,
+        })
+        .returning(['id', 'name', 'duration_minutes', 'price_cents', 'category', 'is_active'])
+
+      logBusinessEvent({ logger }, 'provider.service.created', {
+        userId: user.id,
+        providerProfileId: provider.id,
+        serviceId: Number(service.id),
+      })
+
+      return response.created(dataResponse(toProviderServiceDto(service)))
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+        return response.conflict(
+          errorResponse({
+            code: 'PROVIDER_SERVICE_ALREADY_EXISTS',
+            message: 'Cette prestation existe déjà.',
+          })
+        )
+      }
+
+      throw error
+    }
+  }
+
+  async updateService({ auth, params, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const serviceId = Number(params.serviceId)
+    if (!Number.isFinite(serviceId) || serviceId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'serviceId invalide',
+        })
+      )
+    }
+
+    const payload = await request.validateUsing(providerServiceValidator)
+    const [service] = await db
+      .from('provider_services')
+      .where('id', serviceId)
+      .where('provider_profile_id', provider.id)
+      .update({
+        name: payload.name,
+        duration_minutes: payload.durationMinutes,
+        price_cents: payload.priceCents,
+        category: payload.category,
+        is_active: payload.isActive ?? true,
+        updated_at: DateTime.utc().toJSDate(),
+      })
+      .returning(['id', 'name', 'duration_minutes', 'price_cents', 'category', 'is_active'])
+
+    if (!service) {
+      return response.notFound(
+        errorResponse({
+          code: 'PROVIDER_SERVICE_NOT_FOUND',
+          message: 'Prestation introuvable.',
+        })
+      )
+    }
+
+    logBusinessEvent({ logger }, 'provider.service.updated', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      serviceId,
+    })
+
+    return response.ok(dataResponse(toProviderServiceDto(service)))
+  }
+
+  async deleteService({ auth, params, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const serviceId = Number(params.serviceId)
+    if (!Number.isFinite(serviceId) || serviceId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'serviceId invalide',
+        })
+      )
+    }
+
+    const deleted = await db
+      .from('provider_services')
+      .where('id', serviceId)
+      .where('provider_profile_id', provider.id)
+      .delete()
+
+    if (!deleted) {
+      return response.notFound(
+        errorResponse({
+          code: 'PROVIDER_SERVICE_NOT_FOUND',
+          message: 'Prestation introuvable.',
+        })
+      )
+    }
+
+    logBusinessEvent({ logger }, 'provider.service.deleted', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      serviceId,
     })
 
     return response.ok(dataResponse({ deleted: true }))

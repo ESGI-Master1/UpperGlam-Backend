@@ -12,6 +12,7 @@ import {
   checkoutDraftValidator,
   createBookingDraftValidator,
   paymentIntentValidator,
+  providerServiceValidator,
   updateBookingValidator,
   updateProviderProfileValidator,
   uploadCommitValidator,
@@ -176,6 +177,25 @@ test.group('booking and provider validators', () => {
         serviceModes: ['home', 'institute'],
         homeServiceZones: ['Paris 8e', 'Neuilly-sur-Seine'],
         priceFromCents: 9000,
+      }
+    )
+  })
+
+  test('accepts provider service catalog payloads', async ({ assert }) => {
+    assert.deepEqual(
+      await providerServiceValidator.validate({
+        name: '  Brushing signature  ',
+        durationMinutes: 45,
+        priceCents: 6500,
+        category: '  Coiffure  ',
+        isActive: true,
+      }),
+      {
+        name: 'Brushing signature',
+        durationMinutes: 45,
+        priceCents: 6500,
+        category: 'Coiffure',
+        isActive: true,
       }
     )
   })
