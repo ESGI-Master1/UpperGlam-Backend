@@ -89,6 +89,20 @@ export const providerServiceValidator = vine.compile(
   })
 )
 
+export const providerGalleryItemValidator = vine.compile(
+  vine.object({
+    mediaId: vine.number().positive(),
+    title: vine.string().trim().maxLength(255).nullable().optional(),
+    position: vine.number().min(0).max(10_000).optional(),
+  })
+)
+
+export const providerGalleryOrderValidator = vine.compile(
+  vine.object({
+    itemIds: vine.array(vine.number().positive()).minLength(1),
+  })
+)
+
 export const providerBookingRejectValidator = vine.compile(
   vine.object({
     reason: vine.string().trim().minLength(3).maxLength(1000),

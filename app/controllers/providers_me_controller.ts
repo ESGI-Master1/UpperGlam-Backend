@@ -4,10 +4,13 @@ import { DateTime } from 'luxon'
 import { dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
 import { expireExpiredBookingDrafts } from '#services/booking_drafts'
+import { getSignedUrlsByMediaIds } from '#services/media_assets'
 import {
   createProviderAvailabilityClosureValidator,
   createProviderAvailabilityRuleValidator,
   createProviderAvailabilitySlotValidator,
+  providerGalleryItemValidator,
+  providerGalleryOrderValidator,
   providerBookingProposeSlotValidator,
   providerBookingRejectValidator,
   providerServiceValidator,
@@ -118,6 +121,16 @@ function toProviderServiceDto(service: Record<string, unknown>) {
     priceCents: Number(service.price_cents),
     category: service.category,
     isActive: Boolean(service.is_active),
+  }
+}
+
+function toProviderGalleryItemDto(item: Record<string, unknown>, imageUrl: string | null = null) {
+  return {
+    id: Number(item.id),
+    mediaId: Number(item.media_id),
+    imageUrl,
+    title: item.title ?? null,
+    position: Number(item.position),
   }
 }
 
@@ -1094,6 +1107,166 @@ export default class ProvidersMeController {
       userId: user.id,
       providerProfileId: provider.id,
       serviceId,
+    })
+
+    return response.ok(dataResponse({ deleted: true }))
+  }
+
+  async gallery({ auth, response }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const items = await db
+      .from('provider_gallery_items')
+      .where('provider_profile_id', provider.id)
+      .orderBy('position', 'asc')
+      .select('id', 'media_id', 'title', 'position')
+    const urlsByMediaId = await getSignedUrlsByMediaIds(items.map((item) => Number(item.media_id)))
+
+    return response.ok(
+      dataResponse(
+        items.map((item) =>
+          toProviderGalleryItemDto(item, urlsByMediaId.get(Number(item.media_id)) ?? null)
+        )
+      )
+    )
+  }
+
+  async addGalleryItem({ auth, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(providerGalleryItemValidator)
+    const media = await db
+      .from('media_assets')
+      .where('id', payload.mediaId)
+      .where('owner_user_id', user.id)
+      .first()
+
+    if (!media) {
+      return response.notFound(
+        errorResponse({
+          code: 'MEDIA_NOT_FOUND',
+          message: 'Media introuvable.',
+        })
+      )
+    }
+
+    const maxPosition = await db
+      .from('provider_gallery_items')
+      .where('provider_profile_id', provider.id)
+      .max('position as position')
+      .first()
+    const position =
+      payload.position ??
+      (maxPosition?.position === null ? 0 : Number(maxPosition?.position ?? -1) + 1)
+
+    const [item] = await db
+      .table('provider_gallery_items')
+      .insert({
+        provider_profile_id: provider.id,
+        media_id: payload.mediaId,
+        title: payload.title ?? null,
+        position,
+      })
+      .returning(['id', 'media_id', 'title', 'position'])
+
+    logBusinessEvent({ logger }, 'provider.gallery_item.created', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      galleryItemId: Number(item.id),
+    })
+
+    const urlsByMediaId = await getSignedUrlsByMediaIds([Number(item.media_id)])
+    return response.created(
+      dataResponse(toProviderGalleryItemDto(item, urlsByMediaId.get(Number(item.media_id)) ?? null))
+    )
+  }
+
+  async reorderGallery({ auth, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(providerGalleryOrderValidator)
+    const existingItems = await db
+      .from('provider_gallery_items')
+      .where('provider_profile_id', provider.id)
+      .whereIn('id', payload.itemIds)
+      .select('id')
+
+    if (existingItems.length !== payload.itemIds.length) {
+      return response.badRequest(
+        errorResponse({
+          code: 'PROVIDER_GALLERY_ORDER_INVALID',
+          message: 'Ordre de galerie invalide.',
+        })
+      )
+    }
+
+    await db.transaction(async (trx) => {
+      for (const [position, itemId] of payload.itemIds.entries()) {
+        await trx
+          .from('provider_gallery_items')
+          .where('id', itemId)
+          .where('provider_profile_id', provider.id)
+          .update({ position })
+      }
+    })
+
+    logBusinessEvent({ logger }, 'provider.gallery_item.reordered', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      itemCount: payload.itemIds.length,
+    })
+
+    return this.gallery({ auth, response } as HttpContext)
+  }
+
+  async deleteGalleryItem({ auth, params, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const itemId = Number(params.itemId)
+    if (!Number.isFinite(itemId) || itemId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'itemId invalide',
+        })
+      )
+    }
+
+    const deleted = await db
+      .from('provider_gallery_items')
+      .where('id', itemId)
+      .where('provider_profile_id', provider.id)
+      .delete()
+
+    if (!deleted) {
+      return response.notFound(
+        errorResponse({
+          code: 'PROVIDER_GALLERY_ITEM_NOT_FOUND',
+          message: 'Photo introuvable.',
+        })
+      )
+    }
+
+    logBusinessEvent({ logger }, 'provider.gallery_item.deleted', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      galleryItemId: itemId,
     })
 
     return response.ok(dataResponse({ deleted: true }))
