@@ -125,8 +125,16 @@ async function presentAuthUser(
   fallbackEmail?: string,
   fallbackPhone?: string | null
 ) {
-  const profile = await db.from('user_profiles').where('user_id', userId).first()
-  const user = await db.from('users').where('id', userId).first()
+  const [profile, user, roles] = await Promise.all([
+    db.from('user_profiles').where('user_id', userId).first(),
+    db.from('users').where('id', userId).first(),
+    db
+      .from('user_roles as ur')
+      .join('roles as r', 'r.id', 'ur.role_id')
+      .where('ur.user_id', userId)
+      .orderBy('r.name', 'asc')
+      .select('r.name'),
+  ])
 
   return {
     id: userId,
@@ -134,6 +142,7 @@ async function presentAuthUser(
     firstName: profile?.first_name ?? null,
     lastName: profile?.last_name ?? null,
     phone: user?.phone ?? fallbackPhone ?? null,
+    roles: roles.map((role) => String(role.name)),
   }
 }
 

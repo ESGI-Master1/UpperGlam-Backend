@@ -34,6 +34,24 @@ export const updateBookingValidator = vine.compile(
   })
 )
 
+export const updateProviderProfileValidator = vine.compile(
+  vine.object({
+    displayName: vine.string().trim().minLength(2).maxLength(150).optional(),
+    city: vine.string().trim().minLength(2).maxLength(150).optional(),
+    bio: vine.string().trim().maxLength(5000).nullable().optional(),
+    instituteAddress: vine.string().trim().maxLength(1000).nullable().optional(),
+    serviceModes: vine.array(vine.enum(['home', 'institute'] as const)).optional(),
+    priceFromCents: vine.number().min(0).nullable().optional(),
+  })
+)
+
+export const createProviderAvailabilitySlotValidator = vine.compile(
+  vine.object({
+    slotStartAt: vine.string().trim(),
+    slotEndAt: vine.string().trim(),
+  })
+)
+
 export const updateUserProfileValidator = vine.compile(
   vine.object({
     firstName: vine.string().trim().minLength(1).maxLength(120).nullable().optional(),

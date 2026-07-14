@@ -14,6 +14,7 @@ const AuthController = () => import('#controllers/auth_controller')
 const PreRegistrationsController = () =>
   import('#infrastructure/http/controllers/pre_registrations_controller')
 const ProvidersController = () => import('#controllers/providers_controller')
+const ProvidersMeController = () => import('#controllers/providers_me_controller')
 const BookingsController = () => import('#controllers/bookings_controller')
 const UsersController = () => import('#controllers/users_controller')
 const UploadsController = () => import('#controllers/uploads_controller')
@@ -64,6 +65,18 @@ router
     router.post('/uploads/presign', [UploadsController, 'presign'])
     router.post('/uploads/commit', [UploadsController, 'commit'])
     router.get('/media/:mediaId', [UploadsController, 'getMediaUrl'])
+
+    router.get('/providers/me/dashboard', [ProvidersMeController, 'dashboard'])
+    router.get('/providers/me/profile', [ProvidersMeController, 'profile'])
+    router.patch('/providers/me/profile', [ProvidersMeController, 'updateProfile'])
+    router.get('/providers/me/bookings', [ProvidersMeController, 'bookings'])
+    router.get('/providers/me/availability', [ProvidersMeController, 'availability'])
+    router.post('/providers/me/availability', [ProvidersMeController, 'createAvailability'])
+    router.delete('/providers/me/availability/:slotId', [
+      ProvidersMeController,
+      'deleteAvailability',
+    ])
+    router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
   })
   .use(
     middleware.auth({
