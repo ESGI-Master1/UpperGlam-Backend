@@ -103,6 +103,12 @@ export const providerGalleryOrderValidator = vine.compile(
   })
 )
 
+export const providerCustomerNoteValidator = vine.compile(
+  vine.object({
+    note: vine.string().trim().maxLength(5000).nullable(),
+  })
+)
+
 export const providerBookingRejectValidator = vine.compile(
   vine.object({
     reason: vine.string().trim().minLength(3).maxLength(1000),

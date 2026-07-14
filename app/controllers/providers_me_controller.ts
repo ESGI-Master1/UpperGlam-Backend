@@ -13,6 +13,7 @@ import {
   providerGalleryOrderValidator,
   providerBookingProposeSlotValidator,
   providerBookingRejectValidator,
+  providerCustomerNoteValidator,
   providerServiceValidator,
   providerBookingStatusValidator,
   updateProviderProfileValidator,
@@ -132,6 +133,11 @@ function toProviderGalleryItemDto(item: Record<string, unknown>, imageUrl: strin
     title: item.title ?? null,
     position: Number(item.position),
   }
+}
+
+function escapeCsv(value: unknown) {
+  const raw = value === null || value === undefined ? '' : String(value)
+  return `"${raw.replace(/"/g, '""')}"`
 }
 
 export default class ProvidersMeController {
@@ -1272,6 +1278,197 @@ export default class ProvidersMeController {
     return response.ok(dataResponse({ deleted: true }))
   }
 
+  async customers({ auth, response }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const rows = await db
+      .from('bookings as b')
+      .join('users as u', 'u.id', 'b.customer_user_id')
+      .leftJoin('user_profiles as up', 'up.user_id', 'b.customer_user_id')
+      .leftJoin('provider_customer_notes as pcn', (join) => {
+        join
+          .on('pcn.customer_user_id', 'b.customer_user_id')
+          .andOnVal('pcn.provider_profile_id', provider.id)
+      })
+      .where('b.provider_profile_id', provider.id)
+      .groupBy(
+        'b.customer_user_id',
+        'u.email',
+        'up.first_name',
+        'up.last_name',
+        'pcn.note',
+        'pcn.updated_at'
+      )
+      .orderByRaw('max(b.slot_start_at) desc')
+      .select(
+        'b.customer_user_id',
+        'u.email',
+        'up.first_name',
+        'up.last_name',
+        'pcn.note',
+        'pcn.updated_at'
+      )
+      .count('* as booking_count')
+      .max('b.slot_start_at as last_booking_at')
+      .sum('b.amount_cents as total_amount_cents')
+
+    return response.ok(
+      dataResponse(
+        rows.map((row) => ({
+          customerUserId: Number(row.customer_user_id),
+          firstName: row.first_name ?? null,
+          lastName: row.last_name ?? null,
+          email: row.email,
+          bookingCount: Number(row.booking_count ?? 0),
+          lastBookingAt: toIso(row.last_booking_at),
+          totalAmountCents: centsToNumber(row.total_amount_cents),
+          note: row.note ?? null,
+          noteUpdatedAt: toIso(row.updated_at),
+        }))
+      )
+    )
+  }
+
+  async updateCustomerNote({ auth, params, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const customerUserId = Number(params.customerUserId)
+    if (!Number.isFinite(customerUserId) || customerUserId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'customerUserId invalide',
+        })
+      )
+    }
+
+    const customerBooking = await db
+      .from('bookings')
+      .where('provider_profile_id', provider.id)
+      .where('customer_user_id', customerUserId)
+      .first()
+    if (!customerBooking) {
+      return response.notFound(
+        errorResponse({
+          code: 'PROVIDER_CUSTOMER_NOT_FOUND',
+          message: 'Client introuvable.',
+        })
+      )
+    }
+
+    const payload = await request.validateUsing(providerCustomerNoteValidator)
+    const updatedAt = DateTime.utc().toJSDate()
+    const updated = await db
+      .from('provider_customer_notes')
+      .where('provider_profile_id', provider.id)
+      .where('customer_user_id', customerUserId)
+      .update({
+        note: payload.note,
+        updated_at: updatedAt,
+      })
+
+    if (!updated) {
+      await db.table('provider_customer_notes').insert({
+        provider_profile_id: provider.id,
+        customer_user_id: customerUserId,
+        note: payload.note,
+        updated_at: updatedAt,
+      })
+    }
+
+    logBusinessEvent({ logger }, 'provider.customer_note.updated', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      customerUserId,
+    })
+
+    return response.ok(
+      dataResponse({
+        customerUserId,
+        note: payload.note ?? null,
+        noteUpdatedAt: toIso(updatedAt),
+      })
+    )
+  }
+
+  async exportCsv({ auth, request, response }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const type = String(request.input('type') ?? 'bookings')
+    const rows = await db
+      .from('bookings as b')
+      .leftJoin('users as u', 'u.id', 'b.customer_user_id')
+      .where('b.provider_profile_id', provider.id)
+      .orderBy('b.slot_start_at', 'desc')
+      .select(
+        'b.id',
+        'b.slot_start_at',
+        'b.slot_end_at',
+        'b.appointment_mode',
+        'b.amount_cents',
+        'b.currency',
+        'b.status',
+        'b.provider_status',
+        'u.email'
+      )
+
+    const header =
+      type === 'transactions'
+        ? ['booking_id', 'date', 'customer_email', 'amount_cents', 'currency', 'status']
+        : [
+            'booking_id',
+            'start_at',
+            'end_at',
+            'customer_email',
+            'appointment_mode',
+            'booking_status',
+            'provider_status',
+          ]
+    const lines = [
+      header.join(','),
+      ...rows.map((row) =>
+        type === 'transactions'
+          ? [
+              row.id,
+              toIso(row.slot_start_at),
+              row.email,
+              row.amount_cents,
+              row.currency,
+              row.status,
+            ]
+              .map(escapeCsv)
+              .join(',')
+          : [
+              row.id,
+              toIso(row.slot_start_at),
+              toIso(row.slot_end_at),
+              row.email,
+              row.appointment_mode,
+              row.status,
+              row.provider_status ?? 'pending',
+            ]
+              .map(escapeCsv)
+              .join(',')
+      ),
+    ]
+
+    response.header('Content-Type', 'text/csv; charset=utf-8')
+    response.header('Content-Disposition', `attachment; filename="provider-${type}.csv"`)
+    return response.send(lines.join('\n'))
+  }
+
   async revenue({ auth, response }: HttpContext) {
     await expireExpiredBookingDrafts()
     const user = auth.getUserOrFail()
@@ -1284,7 +1481,7 @@ export default class ProvidersMeController {
     const startOfMonth = now.startOf('month').toJSDate()
     const startOfYear = now.startOf('year').toJSDate()
 
-    const [month, year, transactions] = await Promise.all([
+    const [month, year, transactions, lifetime] = await Promise.all([
       db
         .from('bookings')
         .where('provider_profile_id', provider.id)
@@ -1307,6 +1504,13 @@ export default class ProvidersMeController {
         .orderBy('slot_start_at', 'desc')
         .limit(20)
         .select('id', 'slot_start_at', 'amount_cents', 'currency', 'status'),
+      db
+        .from('bookings')
+        .where('provider_profile_id', provider.id)
+        .where('status', 'paid')
+        .sum('amount_cents as amount_cents')
+        .count('* as total')
+        .first(),
     ])
 
     return response.ok(
@@ -1319,6 +1523,12 @@ export default class ProvidersMeController {
         year: {
           amountCents: centsToNumber(year?.amount_cents),
           bookingCount: Number(year?.total ?? 0),
+        },
+        payouts: {
+          status: 'manual_review',
+          paidOutCents: 0,
+          pendingCents: centsToNumber(lifetime?.amount_cents),
+          bookingCount: Number(lifetime?.total ?? 0),
         },
         transactions: transactions.map((transaction) => ({
           bookingId: Number(transaction.id),

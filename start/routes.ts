@@ -141,7 +141,13 @@ router
         router.post('/providers/me/gallery', [ProvidersMeController, 'addGalleryItem'])
         router.put('/providers/me/gallery/order', [ProvidersMeController, 'reorderGallery'])
         router.delete('/providers/me/gallery/:itemId', [ProvidersMeController, 'deleteGalleryItem'])
+        router.get('/providers/me/customers', [ProvidersMeController, 'customers'])
+        router.put('/providers/me/customers/:customerUserId/note', [
+          ProvidersMeController,
+          'updateCustomerNote',
+        ])
         router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
+        router.get('/providers/me/export.csv', [ProvidersMeController, 'exportCsv'])
       })
       .use(middleware.provider())
   })
