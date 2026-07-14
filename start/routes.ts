@@ -108,6 +108,7 @@ router
 
 router
   .group(() => {
+    router.get('/admin/audit-events', [AdminPreRegistrationsController, 'auditEvents'])
     router.get('/admin/pre-registrations', [AdminPreRegistrationsController, 'index'])
     router.get('/admin/pre-registrations/:preRegistrationId', [
       AdminPreRegistrationsController,

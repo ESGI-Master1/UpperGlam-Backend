@@ -18,6 +18,7 @@ import { getResetPasswordEmailTemplate } from '#infrastructure/integrations/mail
 import { dataResponse, errorResponse } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
 import { cleanupExpiredSecurityArtifacts } from '#services/retention'
+import { recordAdminAuditEvent } from '#services/admin_audit'
 
 const DEFAULT_RESET_TOKEN_EXPIRATION_MINUTES = 60
 const RESET_TOKEN_SIZE_IN_BYTES = 32
@@ -222,6 +223,15 @@ export default class AuthController {
       })
 
       const authUser = await presentAuthUser(user.id, user.email, user.phone)
+      if (authUser.roles.includes('admin')) {
+        await recordAdminAuditEvent({
+          action: 'admin.login.succeeded',
+          adminUserId: user.id,
+          details: {
+            deviceName: payload.deviceName ?? 'default',
+          },
+        })
+      }
       logBusinessEvent({ logger }, 'auth.login.succeeded', {
         userId: user.id,
         roles: authUser.roles.join(','),
