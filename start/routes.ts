@@ -112,6 +112,27 @@ router
           ProvidersMeController,
           'deleteAvailability',
         ])
+        router.get('/providers/me/availability/rules', [ProvidersMeController, 'availabilityRules'])
+        router.post('/providers/me/availability/rules', [
+          ProvidersMeController,
+          'createAvailabilityRule',
+        ])
+        router.delete('/providers/me/availability/rules/:ruleId', [
+          ProvidersMeController,
+          'deleteAvailabilityRule',
+        ])
+        router.get('/providers/me/availability/closures', [
+          ProvidersMeController,
+          'availabilityClosures',
+        ])
+        router.post('/providers/me/availability/closures', [
+          ProvidersMeController,
+          'createAvailabilityClosure',
+        ])
+        router.delete('/providers/me/availability/closures/:closureId', [
+          ProvidersMeController,
+          'deleteAvailabilityClosure',
+        ])
         router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
       })
       .use(middleware.provider())

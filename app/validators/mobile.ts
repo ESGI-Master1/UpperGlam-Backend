@@ -51,6 +51,33 @@ export const createProviderAvailabilitySlotValidator = vine.compile(
   })
 )
 
+export const createProviderAvailabilityRuleValidator = vine.compile(
+  vine.object({
+    weekday: vine.number().min(0).max(6),
+    startTime: vine
+      .string()
+      .trim()
+      .regex(/^\d{2}:\d{2}$/),
+    endTime: vine
+      .string()
+      .trim()
+      .regex(/^\d{2}:\d{2}$/),
+    appointmentMode: vine
+      .enum(['home', 'institute'] as const)
+      .nullable()
+      .optional(),
+    isActive: vine.boolean().optional(),
+  })
+)
+
+export const createProviderAvailabilityClosureValidator = vine.compile(
+  vine.object({
+    startsAt: vine.string().trim(),
+    endsAt: vine.string().trim(),
+    reason: vine.string().trim().maxLength(500).nullable().optional(),
+  })
+)
+
 export const providerBookingRejectValidator = vine.compile(
   vine.object({
     reason: vine.string().trim().minLength(3).maxLength(1000),

@@ -5,6 +5,8 @@ import { dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { logBusinessEvent } from '#services/observability'
 import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 import {
+  createProviderAvailabilityClosureValidator,
+  createProviderAvailabilityRuleValidator,
   createProviderAvailabilitySlotValidator,
   providerBookingProposeSlotValidator,
   providerBookingRejectValidator,
@@ -79,6 +81,30 @@ function toProviderBookingDto(booking: Record<string, unknown>) {
       email: booking.email ?? null,
     },
   }
+}
+
+function toProviderAvailabilityRuleDto(rule: Record<string, unknown>) {
+  return {
+    id: Number(rule.id),
+    weekday: Number(rule.weekday),
+    startTime: rule.start_time,
+    endTime: rule.end_time,
+    appointmentMode: rule.appointment_mode ?? null,
+    isActive: Boolean(rule.is_active),
+  }
+}
+
+function toProviderAvailabilityClosureDto(closure: Record<string, unknown>) {
+  return {
+    id: Number(closure.id),
+    startsAt: toIso(closure.starts_at),
+    endsAt: toIso(closure.ends_at),
+    reason: closure.reason ?? null,
+  }
+}
+
+function isValidTimeRange(startTime: string, endTime: string) {
+  return startTime < endTime
 }
 
 export default class ProvidersMeController {
@@ -526,24 +552,41 @@ export default class ProvidersMeController {
       )
     }
 
-    const slots = await db
-      .from('provider_availability_slots')
-      .where('provider_profile_id', provider.id)
-      .where('slot_start_at', '>=', fromDate.toJSDate())
-      .where('slot_start_at', '<=', toDate.toJSDate())
-      .orderBy('slot_start_at', 'asc')
-      .select('id', 'slot_start_at', 'slot_end_at', 'is_booked', 'booking_id')
+    const [slots, rules, closures] = await Promise.all([
+      db
+        .from('provider_availability_slots')
+        .where('provider_profile_id', provider.id)
+        .where('slot_start_at', '>=', fromDate.toJSDate())
+        .where('slot_start_at', '<=', toDate.toJSDate())
+        .orderBy('slot_start_at', 'asc')
+        .select('id', 'slot_start_at', 'slot_end_at', 'is_booked', 'booking_id'),
+      db
+        .from('provider_availability_rules')
+        .where('provider_profile_id', provider.id)
+        .orderBy('weekday', 'asc')
+        .orderBy('start_time', 'asc')
+        .select('id', 'weekday', 'start_time', 'end_time', 'appointment_mode', 'is_active'),
+      db
+        .from('provider_availability_closures')
+        .where('provider_profile_id', provider.id)
+        .where('ends_at', '>=', fromDate.toJSDate())
+        .where('starts_at', '<=', toDate.toJSDate())
+        .orderBy('starts_at', 'asc')
+        .select('id', 'starts_at', 'ends_at', 'reason'),
+    ])
 
     return response.ok(
-      dataResponse(
-        slots.map((slot) => ({
+      dataResponse({
+        slots: slots.map((slot) => ({
           id: Number(slot.id),
           slotStartAt: toIso(slot.slot_start_at),
           slotEndAt: toIso(slot.slot_end_at),
           isBooked: Boolean(slot.is_booked),
           bookingId: slot.booking_id ? Number(slot.booking_id) : null,
-        }))
-      )
+        })),
+        rules: rules.map((rule) => toProviderAvailabilityRuleDto(rule)),
+        closures: closures.map((closure) => toProviderAvailabilityClosureDto(closure)),
+      })
     )
   }
 
@@ -662,6 +705,231 @@ export default class ProvidersMeController {
       providerProfileId: provider.id,
       slotId,
     })
+    return response.ok(dataResponse({ deleted: true }))
+  }
+
+  async availabilityRules({ auth, response }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const rules = await db
+      .from('provider_availability_rules')
+      .where('provider_profile_id', provider.id)
+      .orderBy('weekday', 'asc')
+      .orderBy('start_time', 'asc')
+      .select('id', 'weekday', 'start_time', 'end_time', 'appointment_mode', 'is_active')
+
+    return response.ok(dataResponse(rules.map((rule) => toProviderAvailabilityRuleDto(rule))))
+  }
+
+  async createAvailabilityRule({ auth, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(createProviderAvailabilityRuleValidator)
+    if (!isValidTimeRange(payload.startTime, payload.endTime)) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: "L'horaire récurrent est invalide.",
+        })
+      )
+    }
+
+    try {
+      const [rule] = await db
+        .table('provider_availability_rules')
+        .insert({
+          provider_profile_id: provider.id,
+          weekday: payload.weekday,
+          start_time: payload.startTime,
+          end_time: payload.endTime,
+          appointment_mode: payload.appointmentMode ?? null,
+          is_active: payload.isActive ?? true,
+        })
+        .returning(['id', 'weekday', 'start_time', 'end_time', 'appointment_mode', 'is_active'])
+
+      logBusinessEvent({ logger }, 'provider.availability_rule.created', {
+        userId: user.id,
+        providerProfileId: provider.id,
+        ruleId: Number(rule.id),
+      })
+
+      return response.created(dataResponse(toProviderAvailabilityRuleDto(rule)))
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+        return response.conflict(
+          errorResponse({
+            code: 'PROVIDER_AVAILABILITY_RULE_ALREADY_EXISTS',
+            message: 'Cette règle horaire existe déjà.',
+          })
+        )
+      }
+
+      throw error
+    }
+  }
+
+  async deleteAvailabilityRule({ auth, params, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const ruleId = Number(params.ruleId)
+    if (!Number.isFinite(ruleId) || ruleId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'ruleId invalide',
+        })
+      )
+    }
+
+    const deleted = await db
+      .from('provider_availability_rules')
+      .where('id', ruleId)
+      .where('provider_profile_id', provider.id)
+      .delete()
+
+    if (!deleted) {
+      return response.notFound(
+        errorResponse({
+          code: 'PROVIDER_AVAILABILITY_RULE_NOT_FOUND',
+          message: 'Règle horaire introuvable.',
+        })
+      )
+    }
+
+    logBusinessEvent({ logger }, 'provider.availability_rule.deleted', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      ruleId,
+    })
+
+    return response.ok(dataResponse({ deleted: true }))
+  }
+
+  async availabilityClosures({ auth, request, response }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const fromDate = request.input('from')
+      ? DateTime.fromISO(String(request.input('from')), { zone: 'utc' })
+      : DateTime.utc().startOf('day')
+    const toDate = request.input('to')
+      ? DateTime.fromISO(String(request.input('to')), { zone: 'utc' })
+      : DateTime.utc().plus({ days: 90 }).endOf('day')
+
+    if (!fromDate.isValid || !toDate.isValid || fromDate >= toDate) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'Paramètres from/to invalides',
+        })
+      )
+    }
+
+    const closures = await db
+      .from('provider_availability_closures')
+      .where('provider_profile_id', provider.id)
+      .where('ends_at', '>=', fromDate.toJSDate())
+      .where('starts_at', '<=', toDate.toJSDate())
+      .orderBy('starts_at', 'asc')
+      .select('id', 'starts_at', 'ends_at', 'reason')
+
+    return response.ok(
+      dataResponse(closures.map((closure) => toProviderAvailabilityClosureDto(closure)))
+    )
+  }
+
+  async createAvailabilityClosure({ auth, request, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const payload = await request.validateUsing(createProviderAvailabilityClosureValidator)
+    const startsAt = DateTime.fromISO(payload.startsAt, { zone: 'utc' })
+    const endsAt = DateTime.fromISO(payload.endsAt, { zone: 'utc' })
+
+    if (!startsAt.isValid || !endsAt.isValid || startsAt >= endsAt) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'La fermeture est invalide.',
+        })
+      )
+    }
+
+    const [closure] = await db
+      .table('provider_availability_closures')
+      .insert({
+        provider_profile_id: provider.id,
+        starts_at: startsAt.toJSDate(),
+        ends_at: endsAt.toJSDate(),
+        reason: payload.reason ?? null,
+      })
+      .returning(['id', 'starts_at', 'ends_at', 'reason'])
+
+    logBusinessEvent({ logger }, 'provider.availability_closure.created', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      closureId: Number(closure.id),
+    })
+
+    return response.created(dataResponse(toProviderAvailabilityClosureDto(closure)))
+  }
+
+  async deleteAvailabilityClosure({ auth, params, response, logger }: HttpContext) {
+    const user = auth.getUserOrFail()
+    const provider = await this.getMyProviderProfile(user.id)
+    if (!provider) {
+      return this.forbidden(response)
+    }
+
+    const closureId = Number(params.closureId)
+    if (!Number.isFinite(closureId) || closureId <= 0) {
+      return response.badRequest(
+        errorResponse({
+          code: 'VALIDATION_ERROR',
+          message: 'closureId invalide',
+        })
+      )
+    }
+
+    const deleted = await db
+      .from('provider_availability_closures')
+      .where('id', closureId)
+      .where('provider_profile_id', provider.id)
+      .delete()
+
+    if (!deleted) {
+      return response.notFound(
+        errorResponse({
+          code: 'PROVIDER_AVAILABILITY_CLOSURE_NOT_FOUND',
+          message: 'Fermeture introuvable.',
+        })
+      )
+    }
+
+    logBusinessEvent({ logger }, 'provider.availability_closure.deleted', {
+      userId: user.id,
+      providerProfileId: provider.id,
+      closureId,
+    })
+
     return response.ok(dataResponse({ deleted: true }))
   }
 
