@@ -1,5 +1,7 @@
 # UpperGlam-Backend
 
+[![CI](https://github.com/ESGI-Master1/UpperGlam-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/ESGI-Master1/UpperGlam-Backend/actions/workflows/ci.yml)
+
 ## Configuration production
 
 Variables obligatoires ou sensibles a verifier avant de deployer :

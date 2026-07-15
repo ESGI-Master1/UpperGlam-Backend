@@ -1,0 +1,26 @@
+name: Bug report
+description: Report a reproducible problem
+title: 'fix: '
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Branch, commit, OS, Node version, and relevant configuration without secrets.
+    validations:
+      required: true
