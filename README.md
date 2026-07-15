@@ -2,6 +2,18 @@
 
 [![CI](https://github.com/ESGI-Master1/UpperGlam-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/ESGI-Master1/UpperGlam-Backend/actions/workflows/ci.yml)
 
+## Lancement local
+
+```bash
+cp .env.example .env
+docker compose up -d
+npm ci
+node ace migration:run
+npm run dev
+```
+
+La procedure complete pour les trois applications, les environnements, le seed, les sauvegardes et MinIO est dans [`docs/infrastructure.md`](docs/infrastructure.md).
+
 ## Configuration production
 
 Variables obligatoires ou sensibles a verifier avant de deployer :

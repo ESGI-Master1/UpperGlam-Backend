@@ -32,9 +32,20 @@ const DAYS_OF_SLOTS = 21
 const SLOT_HOURS = [9, 11, 14, 16]
 const BOOKING_COUNT = 260
 const OPEN_DRAFT_COUNT = 90
+const DEMO_SEED = Number.parseInt(process.env.DEMO_SEED ?? '20260715', 10)
+
+let randomState = Number.isFinite(DEMO_SEED) ? DEMO_SEED >>> 0 : 20260715
+
+function random(): number {
+  randomState = (randomState + 0x6d2b79f5) >>> 0
+  let value = randomState
+  value = Math.imul(value ^ (value >>> 15), value | 1)
+  value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
+  return ((value ^ (value >>> 14)) >>> 0) / 4294967296
+}
 
 function randomInt(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min
+  return Math.floor(random() * (max - min + 1)) + min
 }
 
 function pickOne<T>(values: T[]): T {
@@ -261,7 +272,7 @@ export default class extends BaseSeeder {
       seedUsers.map((seedUser) => ({
         user_id: seedUser.userId!,
         reminder_enabled: true,
-        offers_enabled: Math.random() > 0.55,
+        offers_enabled: random() > 0.55,
         analytics_enabled: true,
         created_at: addDays(now, -randomInt(0, 20)),
         updated_at: now,
@@ -296,7 +307,7 @@ export default class extends BaseSeeder {
     )
 
     const providerSeeds: ProviderSeed[] = providerUsers.map((seedUser, index) => {
-      const modes = Math.random() > 0.35 ? ['home', 'institute'] : [pickOne(['home', 'institute'])]
+      const modes = random() > 0.35 ? ['home', 'institute'] : [pickOne(['home', 'institute'])]
       return {
         userId: seedUser.userId!,
         displayName: `${seedUser.firstName} ${seedUser.lastName} Studio`,
@@ -519,7 +530,7 @@ export default class extends BaseSeeder {
           mode === 'home'
             ? `${randomInt(1, 220)} avenue ${pickOne(['de la Republique', 'des Arts', 'du Soleil'])}, ${providerSeed.city}`
             : null,
-        note: Math.random() > 0.5 ? 'Client de test mobile' : null,
+        note: random() > 0.5 ? 'Client de test mobile' : null,
         amount_cents: providerSeed.priceFromCents,
         currency: providerSeed.currency,
         status: 'completed',
@@ -534,7 +545,7 @@ export default class extends BaseSeeder {
       .returning(['id'])
 
     const bookingRows = insertedBookingDrafts.map((draft, index) => {
-      const status: BookingStatus = Math.random() > 0.18 ? 'paid' : 'cancelled'
+      const status: BookingStatus = random() > 0.18 ? 'paid' : 'cancelled'
       return {
         draft_id: Number(draft.id),
         customer_user_id: bookingDraftRows[index].customer_user_id,
@@ -622,7 +633,7 @@ export default class extends BaseSeeder {
       .select('id', 'provider_profile_id', 'customer_user_id')
 
     const reviewRows = paidBookings
-      .filter(() => Math.random() > 0.32)
+      .filter(() => random() > 0.32)
       .slice(0, 180)
       .map((booking) => ({
         provider_profile_id: Number(booking.provider_profile_id),
@@ -659,7 +670,7 @@ export default class extends BaseSeeder {
     const reviewMediaMeta: Array<{ reviewId: number; position: number }> = []
 
     for (const review of insertedReviews) {
-      if (Math.random() < 0.35) {
+      if (random() < 0.35) {
         const filesCount = randomInt(1, 3)
         for (let position = 0; position < filesCount; position++) {
           reviewMediaDraftRows.push({

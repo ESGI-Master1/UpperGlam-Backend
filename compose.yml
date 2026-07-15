@@ -3,15 +3,13 @@ services:
     image: postgres:17-alpine
     container_name: upperglam_postgres
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_DATABASE}
       TZ: ${TZ}
     ports:
-      - '${DB_PORT}:5432'
+      - '127.0.0.1:${DB_PORT}:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -29,16 +27,21 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio123}
     command: server /data --console-address ":9001"
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      - '127.0.0.1:9000:9000'
+      - '127.0.0.1:9001:9001'
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   minio-init:
     image: minio/mc:latest
     depends_on:
       minio:
-        condition: service_started
+        condition: service_healthy
     restart: on-failure
     entrypoint: >
       /bin/sh -c "
