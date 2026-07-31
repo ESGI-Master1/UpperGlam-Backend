@@ -28,6 +28,11 @@ Variables obligatoires ou sensibles a verifier avant de deployer :
 - `BOOKING_REFUND_CUTOFF_HOURS` : delai minimum avant remboursement automatique.
 - `BOOKING_MODIFICATION_CUTOFF_HOURS` : delai minimum avant modification d'un rendez-vous.
 - `CORS_ALLOWED_ORIGINS` : liste separee par virgules des origines autorisees. En production, aucune origine n'est autorisee si cette variable est vide.
+
+Pour une démonstration sans compte Mollie, activer le checkout local décrit dans
+[`docs/mollie-mock.md`](docs/mollie-mock.md). Pour tester le véritable checkout Mollie sans
+paiement réel, utiliser exclusivement une clé `test_` et suivre
+[`docs/mollie-test-mode.md`](docs/mollie-test-mode.md).
 - `OTEL_ENABLED`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT` : OpenTelemetry.
 - `POSTHOG_PROJECT_TOKEN`, `POSTHOG_LOGS_ENDPOINT` : export des logs applicatifs vers PostHog en production.
 

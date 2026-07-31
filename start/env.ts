@@ -49,6 +49,8 @@ export default await Env.create(new URL('../', import.meta.url), {
   MOLLIE_API_KEY: Env.schema.string.optional(),
   MOLLIE_REDIRECT_URL: Env.schema.string.optional(),
   MOLLIE_WEBHOOK_URL: Env.schema.string.optional(),
+  MOLLIE_MOCK: Env.schema.boolean.optional(),
+  MOLLIE_MOCK_BASE_URL: Env.schema.string.optional(),
   BOOKING_REFUND_CUTOFF_HOURS: Env.schema.number.optional(),
   BOOKING_MODIFICATION_CUTOFF_HOURS: Env.schema.number.optional(),
 })

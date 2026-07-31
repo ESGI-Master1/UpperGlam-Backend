@@ -50,12 +50,15 @@ router
   .post('/payments/webhooks/mollie', [BookingsController, 'mollieWebhook'])
   .use(middleware.rateLimit({ keyPrefix: 'mollie-webhook', max: 120, windowMs: 60_000 }))
 
+router
+  .get('/payments/mock/:paymentId', [BookingsController, 'mollieMockCheckout'])
+  .use(middleware.rateLimit({ keyPrefix: 'mollie-mock', max: 60, windowMs: 60_000 }))
+
 router.get('/providers/tags', [ProvidersController, 'tags'])
 router.get('/providers/featured', [ProvidersController, 'featured'])
 router.get('/providers', [ProvidersController, 'index'])
 router.get('/providers/:providerId', [ProvidersController, 'show'])
 router.get('/providers/:providerId/reviews', [ProvidersController, 'reviews'])
-router.get('/providers/:providerId/availability', [ProvidersController, 'availability'])
 
 router
   .group(() => {
@@ -156,6 +159,10 @@ router
       guards: ['api'],
     })
   )
+
+// Keep this dynamic public route after the static `/providers/me/availability` route.
+// Otherwise Adonis interprets "me" as a providerId and the provider agenda returns HTTP 400.
+router.get('/providers/:providerId/availability', [ProvidersController, 'availability'])
 
 router
   .group(() => {

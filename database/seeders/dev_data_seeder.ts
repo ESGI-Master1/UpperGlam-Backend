@@ -588,7 +588,7 @@ export default class extends BaseSeeder {
       insertedBookings.map((booking, index) => ({
         booking_draft_id: Number(booking.draft_id),
         booking_id: Number(booking.id),
-        method: pickOne(['apple_pay', 'google_pay']),
+        method: pickOne(['card', 'apple_pay', 'google_pay']),
         provider: 'wallet',
         provider_transaction_id: `txn_${String(index + 1).padStart(8, '0')}_${randomUUID().slice(0, 8)}`,
         provider_reference: `dev_ref_${String(index + 1).padStart(8, '0')}`,

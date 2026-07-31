@@ -10,6 +10,8 @@ import {
   createMollieRefund,
   getMolliePayment,
   isMollieConfigured,
+  isMollieMockEnabled,
+  isMollieMockPaymentId,
   type MolliePayment,
 } from '#services/mollie'
 import { expireExpiredBookingDrafts } from '#services/booking_drafts'
@@ -46,7 +48,7 @@ type PaymentRow = {
   refunded_at?: Date | string | null
 } | null
 
-type PaymentMethod = 'apple_pay' | 'google_pay'
+type PaymentMethod = 'card' | 'apple_pay' | 'google_pay'
 type PaymentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'refunded'
 
 type BookingDraftRow = {
@@ -143,11 +145,23 @@ function ensureMollieConfigured() {
 }
 
 function toMollieMethod(method: PaymentMethod) {
-  return method === 'apple_pay' ? 'applepay' : 'googlepay'
+  if (method === 'apple_pay') {
+    return 'applepay'
+  }
+
+  if (method === 'google_pay') {
+    return 'googlepay'
+  }
+
+  return 'creditcard'
 }
 
 function toPaymentMethod(method: unknown): PaymentMethod {
-  return method === 'google_pay' ? 'google_pay' : 'apple_pay'
+  if (method === 'apple_pay' || method === 'google_pay' || method === 'card') {
+    return method
+  }
+
+  return 'card'
 }
 
 function mapMolliePaymentStatus(status: string): PaymentStatus {
@@ -228,6 +242,120 @@ function assertPayableDraft(draft: {
       message: 'Le montant de la réservation est invalide.',
     })
   }
+}
+
+type MollieMockResult = 'paid' | 'failed' | 'canceled' | 'expired'
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
+}
+
+function parseMolliePaymentPayload(payload: unknown): MolliePayment | null {
+  try {
+    const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload
+    if (!parsed || typeof parsed !== 'object' || !('id' in parsed)) {
+      return null
+    }
+
+    return parsed as MolliePayment
+  } catch {
+    return null
+  }
+}
+
+function renderMollieMockCheckout(payment: MolliePayment) {
+  const amount = `${escapeHtml(payment.amount.value)} ${escapeHtml(payment.amount.currency)}`
+  const paymentId = escapeHtml(payment.id)
+
+  return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Paiement simulé · Upper Glam</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
+        color: #241a20; background: radial-gradient(circle at top, #fff 0, #f8edf2 52%, #efdce5 100%); }
+      main { width: min(100%, 480px); padding: 32px; border: 1px solid #ead4de; border-radius: 24px;
+        background: rgba(255,255,255,.94); box-shadow: 0 24px 70px rgba(93,43,66,.14); }
+      .badge { display: inline-flex; padding: 7px 11px; border-radius: 999px; background: #f6e5ed;
+        color: #8d315b; font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+      h1 { margin: 18px 0 8px; font-size: clamp(27px, 7vw, 36px); line-height: 1.05; }
+      p { margin: 0; color: #6b5962; line-height: 1.55; }
+      .amount { margin: 24px 0 4px; color: #241a20; font-size: 34px; font-weight: 850; }
+      .reference { margin-bottom: 25px; font: 12px ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; }
+      .actions { display: grid; gap: 11px; }
+      a { display: block; padding: 15px 18px; border-radius: 14px; color: white; text-align: center;
+        text-decoration: none; font-weight: 750; transition: transform .15s ease, opacity .15s ease; }
+      a:hover { transform: translateY(-1px); opacity: .92; }
+      .paid { background: #27865f; } .failed { background: #bb3e54; }
+      .canceled { background: #675d64; } .expired { background: #a06b20; }
+      footer { margin-top: 22px; font-size: 12px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="badge">MODE SIMULATION</span>
+      <h1>Résultat du paiement</h1>
+      <p>Aucun débit ne sera effectué. Choisis le scénario à présenter pendant la démonstration.</p>
+      <div class="amount">${amount}</div>
+      <p class="reference">${paymentId}</p>
+      <div class="actions">
+        <a class="paid" href="?status=paid">Valider le paiement</a>
+        <a class="failed" href="?status=failed">Simuler un refus</a>
+        <a class="canceled" href="?status=canceled">Annuler le paiement</a>
+        <a class="expired" href="?status=expired">Simuler une expiration</a>
+      </div>
+      <footer>Checkout local Upper Glam · Mollie n’est pas contacté</footer>
+    </main>
+  </body>
+</html>`
+}
+
+function renderMollieMockReturn(status: MollieMockResult, redirectUrl: string) {
+  const paid = status === 'paid'
+  const title = paid ? 'Paiement validé' : 'Paiement non validé'
+  const message = paid
+    ? 'La réservation va maintenant être confirmée dans l’application.'
+    : `Le scénario « ${escapeHtml(status)} » a bien été enregistré.`
+  const safeRedirectUrl = escapeHtml(redirectUrl)
+
+  return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${title} · Upper Glam</title>
+    <style>
+      :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px;
+        color: #241a20; text-align: center; background: #f8edf2; }
+      main { width: min(100%, 460px); padding: 36px; border-radius: 24px; background: white;
+        box-shadow: 0 24px 70px rgba(93,43,66,.14); }
+      .icon { display: grid; width: 66px; height: 66px; margin: 0 auto 18px; place-items: center;
+        border-radius: 50%; color: white; background: ${paid ? '#27865f' : '#a06b20'}; font-size: 30px; }
+      h1 { margin: 0 0 10px; } p { color: #6b5962; line-height: 1.55; }
+      a { display: inline-block; margin-top: 18px; padding: 14px 20px; border-radius: 14px;
+        color: white; background: #8d315b; text-decoration: none; font-weight: 750; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="icon">${paid ? '✓' : '!'}</div>
+      <h1>${title}</h1>
+      <p>${message}</p>
+      <a href="${safeRedirectUrl}">Revenir dans Upper Glam</a>
+    </main>
+    <script>setTimeout(function () { window.location.href = ${JSON.stringify(redirectUrl)} }, 500)</script>
+  </body>
+</html>`
 }
 
 export default class BookingsController {
@@ -787,6 +915,49 @@ export default class BookingsController {
     }
   }
 
+  async mollieMockCheckout({ params, request, response }: HttpContext) {
+    const paymentId = String(params.paymentId ?? '').trim()
+
+    if (!isMollieMockEnabled() || !isMollieMockPaymentId(paymentId)) {
+      return response.notFound('Paiement simulé introuvable.')
+    }
+
+    const paymentRow = await db
+      .from('payments')
+      .where('provider_transaction_id', paymentId)
+      .select('id', 'provider_payload')
+      .first()
+    const payment = parseMolliePaymentPayload(paymentRow?.provider_payload)
+
+    if (!paymentRow || !payment) {
+      return response.notFound('Paiement simulé introuvable.')
+    }
+
+    const requestedStatus = String(request.input('status') ?? '').trim()
+    if (!requestedStatus) {
+      return response.type('html').send(renderMollieMockCheckout(payment))
+    }
+
+    const allowedStatuses: MollieMockResult[] = ['paid', 'failed', 'canceled', 'expired']
+    if (!allowedStatuses.includes(requestedStatus as MollieMockResult)) {
+      return response.badRequest('Statut de paiement simulé invalide.')
+    }
+
+    const status = requestedStatus as MollieMockResult
+    const updatedPayment: MolliePayment = { ...payment, status }
+    await db
+      .from('payments')
+      .where('id', paymentRow.id)
+      .update({
+        status: mapMolliePaymentStatus(status),
+        provider_payload: JSON.stringify(updatedPayment),
+        updated_at: DateTime.utc().toJSDate(),
+      })
+
+    const redirectUrl = env.get('MOLLIE_REDIRECT_URL') ?? 'upperglam://payment-return'
+    return response.type('html').send(renderMollieMockReturn(status, redirectUrl))
+  }
+
   async mollieWebhook({ request, response, logger }: HttpContext) {
     const paymentId = String(request.input('id') ?? '').trim()
 
@@ -929,10 +1100,14 @@ export default class BookingsController {
         const synced = await this.syncPaymentFromMollie(trx, molliePayment, draft, payload.method)
 
         if (molliePayment.status !== 'paid') {
-          await trx.from('booking_drafts').where('id', draft.id).update({
-            status: 'payment_failed',
-            updated_at: DateTime.utc().toJSDate(),
-          })
+          const paymentStatus = mapMolliePaymentStatus(molliePayment.status)
+
+          if (paymentStatus === 'failed') {
+            await trx.from('booking_drafts').where('id', draft.id).update({
+              status: 'payment_failed',
+              updated_at: DateTime.utc().toJSDate(),
+            })
+          }
 
           logBusinessEvent(
             { logger },
@@ -947,8 +1122,11 @@ export default class BookingsController {
           )
 
           throw new ApiHttpError(409, {
-            code: 'PAYMENT_NOT_CONFIRMED',
-            message: 'Le paiement n’a pas été confirmé par le PSP.',
+            code: paymentStatus === 'failed' ? 'PAYMENT_NOT_CONFIRMED' : 'PAYMENT_PENDING',
+            message:
+              paymentStatus === 'failed'
+                ? 'Le paiement n’a pas été confirmé par le PSP.'
+                : 'La confirmation du paiement est encore en cours.',
             details: { status: molliePayment.status },
           })
         }

@@ -134,6 +134,11 @@ test.group('booking and provider validators', () => {
       method: 'apple_pay',
     })
 
+    assert.deepEqual(await paymentIntentValidator.validate({ draftId: 42, method: 'card' }), {
+      draftId: 42,
+      method: 'card',
+    })
+
     assert.deepEqual(
       await checkoutDraftValidator.validate({ method: 'google_pay', paymentId: 'tr_test_123' }),
       {
@@ -148,7 +153,7 @@ test.group('booking and provider validators', () => {
       paymentIntentValidator.validate({ draftId: -1, method: 'apple_pay' })
     )
     await expectValidationError(() =>
-      checkoutDraftValidator.validate({ method: 'card', paymentId: 'tr_test_123' })
+      checkoutDraftValidator.validate({ method: 'cash', paymentId: 'tr_test_123' })
     )
     await expectValidationError(() =>
       updateProviderProfileValidator.validate({
