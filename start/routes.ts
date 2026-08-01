@@ -20,6 +20,7 @@ const UsersController = () => import('#controllers/users_controller')
 const UploadsController = () => import('#controllers/uploads_controller')
 const AdminPreRegistrationsController = () =>
   import('#controllers/admin_pre_registrations_controller')
+const AdminManagementController = () => import('#controllers/admin_management_controller')
 
 router.get('/', async () => {
   return {
@@ -166,6 +167,11 @@ router.get('/providers/:providerId/availability', [ProvidersController, 'availab
 
 router
   .group(() => {
+    router.get('/admin/dashboard', [AdminManagementController, 'dashboard'])
+    router.get('/admin/users', [AdminManagementController, 'users'])
+    router.patch('/admin/users/:userId/status', [AdminManagementController, 'updateUserStatus'])
+    router.get('/admin/providers', [AdminManagementController, 'providers'])
+    router.patch('/admin/providers/:providerId', [AdminManagementController, 'updateProvider'])
     router.get('/admin/audit-events', [AdminPreRegistrationsController, 'auditEvents'])
     router.get('/admin/pre-registrations', [AdminPreRegistrationsController, 'index'])
     router.get('/admin/pre-registrations/:preRegistrationId', [
