@@ -16,6 +16,9 @@ import { ResendMailSender } from '#infrastructure/integrations/mail/resend_mail_
 import { getPasswordChangedConfirmationEmailTemplate } from '#infrastructure/integrations/mail/templates/password_changed_confirmation'
 import { getResetPasswordEmailTemplate } from '#infrastructure/integrations/mail/templates/reset_password'
 import { dataResponse, errorResponse } from '#services/http'
+import { logBusinessEvent } from '#services/observability'
+import { cleanupExpiredSecurityArtifacts } from '#services/retention'
+import { recordAdminAuditEvent } from '#services/admin_audit'
 
 const DEFAULT_RESET_TOKEN_EXPIRATION_MINUTES = 60
 const RESET_TOKEN_SIZE_IN_BYTES = 32
@@ -125,8 +128,16 @@ async function presentAuthUser(
   fallbackEmail?: string,
   fallbackPhone?: string | null
 ) {
-  const profile = await db.from('user_profiles').where('user_id', userId).first()
-  const user = await db.from('users').where('id', userId).first()
+  const [profile, user, roles] = await Promise.all([
+    db.from('user_profiles').where('user_id', userId).first(),
+    db.from('users').where('id', userId).first(),
+    db
+      .from('user_roles as ur')
+      .join('roles as r', 'r.id', 'ur.role_id')
+      .where('ur.user_id', userId)
+      .orderBy('r.name', 'asc')
+      .select('r.name'),
+  ])
 
   return {
     id: userId,
@@ -134,11 +145,12 @@ async function presentAuthUser(
     firstName: profile?.first_name ?? null,
     lastName: profile?.last_name ?? null,
     phone: user?.phone ?? fallbackPhone ?? null,
+    roles: roles.map((role) => String(role.name)),
   }
 }
 
 export default class AuthController {
-  async register({ request, response }: HttpContext) {
+  async register({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(registerValidator)
 
     try {
@@ -156,6 +168,10 @@ export default class AuthController {
       })
 
       const authUser = await presentAuthUser(user.id, user.email, user.phone)
+      logBusinessEvent({ logger }, 'auth.register.succeeded', {
+        userId: user.id,
+        roles: authUser.roles.join(','),
+      })
 
       return response.created(
         dataResponse({
@@ -166,6 +182,7 @@ export default class AuthController {
       )
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') {
+        logBusinessEvent({ logger }, 'auth.register.conflict', {}, 'warn')
         return response.conflict(
           errorResponse({
             code: 'AUTH_EMAIL_ALREADY_USED',
@@ -178,12 +195,18 @@ export default class AuthController {
     }
   }
 
-  async login({ request, response }: HttpContext) {
+  async login({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(loginValidator)
     try {
       const user = await User.verifyCredentials(payload.email.toLowerCase(), payload.password)
 
       if (user.status !== 'active') {
+        logBusinessEvent(
+          { logger },
+          'auth.login.blocked',
+          { userId: user.id, accountStatus: user.status },
+          'warn'
+        )
         return response.forbidden(
           errorResponse({
             code: 'AUTH_ACCOUNT_NOT_ACTIVE',
@@ -200,6 +223,19 @@ export default class AuthController {
       })
 
       const authUser = await presentAuthUser(user.id, user.email, user.phone)
+      if (authUser.roles.includes('admin')) {
+        await recordAdminAuditEvent({
+          action: 'admin.login.succeeded',
+          adminUserId: user.id,
+          details: {
+            deviceName: payload.deviceName ?? 'default',
+          },
+        })
+      }
+      logBusinessEvent({ logger }, 'auth.login.succeeded', {
+        userId: user.id,
+        roles: authUser.roles.join(','),
+      })
       return response.ok(
         dataResponse({
           token: token.value?.release(),
@@ -208,6 +244,7 @@ export default class AuthController {
         })
       )
     } catch {
+      logBusinessEvent({ logger }, 'auth.login.failed', {}, 'warn')
       return response.unauthorized(
         errorResponse({
           code: 'AUTH_INVALID_CREDENTIALS',
@@ -219,6 +256,7 @@ export default class AuthController {
 
   async forgotPassword({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(forgotPasswordValidator)
+    await cleanupExpiredSecurityArtifacts()
     const email = payload.email.toLowerCase()
 
     const user = await User.findBy('email', email)
@@ -246,6 +284,10 @@ export default class AuthController {
           subject: 'Réinitialisez votre mot de passe Upper Glam',
           body: getResetPasswordEmailTemplate(resetPasswordUrl, resetCode, expiresInMinutes),
         })
+        logBusinessEvent({ logger }, 'auth.password_reset.requested', {
+          userId: user.id,
+          expiresInMinutes,
+        })
       } catch (error) {
         logger.error({ error, userId: user.id }, 'Failed to create or send password reset token')
       }
@@ -265,6 +307,7 @@ export default class AuthController {
 
   async resetPassword({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(resetPasswordValidator)
+    await cleanupExpiredSecurityArtifacts()
 
     if (payload.password !== payload.passwordConfirmation) {
       return response.unprocessableEntity({
@@ -291,6 +334,10 @@ export default class AuthController {
     }
 
     await applyPasswordReset(resetToken, payload.password, logger)
+    logBusinessEvent({ logger }, 'auth.password_reset.completed', {
+      userId: resetToken.userId,
+      method: 'token',
+    })
 
     return response.ok(
       dataResponse(
@@ -306,6 +353,7 @@ export default class AuthController {
 
   async resetPasswordWithCode({ request, response, logger }: HttpContext) {
     const payload = await request.validateUsing(resetPasswordWithCodeValidator)
+    await cleanupExpiredSecurityArtifacts()
 
     if (payload.password !== payload.passwordConfirmation) {
       return response.unprocessableEntity({
@@ -344,6 +392,10 @@ export default class AuthController {
     }
 
     await applyPasswordReset(resetToken, payload.password, logger)
+    logBusinessEvent({ logger }, 'auth.password_reset.completed', {
+      userId: resetToken.userId,
+      method: 'code',
+    })
 
     return response.ok(
       dataResponse(
@@ -364,9 +416,11 @@ export default class AuthController {
     return response.ok(dataResponse(authUser))
   }
 
-  async logout({ auth, response }: HttpContext) {
+  async logout({ auth, response, logger }: HttpContext) {
     await auth.use('api').authenticate()
+    const user = auth.getUserOrFail()
     await auth.use('api').invalidateToken()
+    logBusinessEvent({ logger }, 'auth.logout.succeeded', { userId: user.id })
     return response.ok(dataResponse({ loggedOut: true }))
   }
 }

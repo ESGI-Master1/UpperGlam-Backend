@@ -1,5 +1,6 @@
 import app from '@adonisjs/core/services/app'
 import { HttpContext, ExceptionHandler } from '@adonisjs/core/http'
+import { recordException } from '#services/observability'
 
 export default class HttpExceptionHandler extends ExceptionHandler {
   /**
@@ -23,6 +24,11 @@ export default class HttpExceptionHandler extends ExceptionHandler {
    * @note You should not attempt to send a response from this method.
    */
   async report(error: unknown, ctx: HttpContext) {
+    recordException(error, {
+      'http.request.method': ctx.request.method(),
+      'url.path': ctx.request.url().split('?')[0] ?? '/',
+      'user.id': ctx.auth?.user?.id ? String(ctx.auth.user.id) : undefined,
+    })
     return super.report(error, ctx)
   }
 }

@@ -16,6 +16,8 @@ public/assets
 # Build tools specific
 npm-debug.log
 yarn-error.log
+*.stdout.log
+*.stderr.log
 
 # Editors specific
 .fleet

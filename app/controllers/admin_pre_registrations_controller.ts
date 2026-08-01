@@ -3,7 +3,14 @@ import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { ResendMailSender } from '#infrastructure/integrations/mail/resend_mail_sender'
 import { getPreRegistrationApprovedTemplate } from '#infrastructure/integrations/mail/templates/pre_registration_approved'
+import {
+  recordAdminAuditEvent,
+  toAdminAuditEventDto,
+  type AdminAuditEventRow,
+} from '#services/admin_audit'
 import { ApiHttpError, dataResponse, errorResponse, parsePositiveInt } from '#services/http'
+import { logBusinessEvent } from '#services/observability'
+import { emitOperationalAlert } from '#services/operational_alerts'
 import { rejectPreRegistrationValidator } from '#validators/admin_pre_registrations'
 
 type PreRegistrationRow = {
@@ -370,11 +377,52 @@ export default class AdminPreRegistrationsController {
           status: 'active',
         })
 
+        await recordAdminAuditEvent(
+          {
+            action: 'admin.pre_registration.approved',
+            adminUserId: adminUser.id,
+            preRegistrationId,
+            details: {
+              targetUserId: Number(current.user_id),
+              previousReviewStatus: current.review_status,
+            },
+          },
+          trx
+        )
+
+        logBusinessEvent({ logger }, 'admin.pre_registration.approved', {
+          adminUserId: adminUser.id,
+          preRegistrationId,
+          targetUserId: Number(current.user_id),
+        })
+
         recipientEmail = String(current.email)
         recipientFirstName = String(current.first_name ?? current.username ?? 'Bonjour')
       })
     } catch (error) {
       if (error instanceof ApiHttpError) {
+        await recordAdminAuditEvent({
+          action: 'admin.pre_registration.action_failed',
+          adminUserId: adminUser.id,
+          preRegistrationId,
+          details: {
+            attemptedAction: 'approve',
+            code: error.payload.code,
+          },
+        })
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'admin',
+            severity: 'warning',
+            message: 'Admin approval action failed',
+            attributes: {
+              adminUserId: adminUser.id,
+              preRegistrationId,
+              code: error.payload.code,
+            },
+          }
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
       throw error
@@ -404,6 +452,24 @@ export default class AdminPreRegistrationsController {
           { error, preRegistrationId, email: recipientEmail },
           'Failed to send pre-registration approval email'
         )
+        logBusinessEvent(
+          { logger },
+          'admin.pre_registration.approval_email_failed',
+          { adminUserId: adminUser.id, preRegistrationId },
+          'warn'
+        )
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'admin',
+            severity: 'warning',
+            message: 'Admin approval email failed',
+            attributes: {
+              adminUserId: adminUser.id,
+              preRegistrationId,
+            },
+          }
+        )
       }
     }
 
@@ -418,7 +484,7 @@ export default class AdminPreRegistrationsController {
     )
   }
 
-  async reject({ auth, params, request, response }: HttpContext) {
+  async reject({ auth, params, request, response, logger }: HttpContext) {
     const preRegistrationId = Number(params.preRegistrationId)
     if (!Number.isFinite(preRegistrationId) || preRegistrationId <= 0) {
       return response.badRequest(
@@ -466,9 +532,52 @@ export default class AdminPreRegistrationsController {
         await trx.from('users').where('id', Number(current.user_id)).update({
           status: 'suspended',
         })
+
+        await recordAdminAuditEvent(
+          {
+            action: 'admin.pre_registration.rejected',
+            adminUserId: adminUser.id,
+            preRegistrationId,
+            details: {
+              targetUserId: Number(current.user_id),
+              previousReviewStatus: current.review_status,
+              reason: payload.reason,
+            },
+          },
+          trx
+        )
+
+        logBusinessEvent({ logger }, 'admin.pre_registration.rejected', {
+          adminUserId: adminUser.id,
+          preRegistrationId,
+          targetUserId: Number(current.user_id),
+          reasonLength: payload.reason.length,
+        })
       })
     } catch (error) {
       if (error instanceof ApiHttpError) {
+        await recordAdminAuditEvent({
+          action: 'admin.pre_registration.action_failed',
+          adminUserId: adminUser.id,
+          preRegistrationId,
+          details: {
+            attemptedAction: 'reject',
+            code: error.payload.code,
+          },
+        })
+        emitOperationalAlert(
+          { logger },
+          {
+            area: 'admin',
+            severity: 'warning',
+            message: 'Admin rejection action failed',
+            attributes: {
+              adminUserId: adminUser.id,
+              preRegistrationId,
+              code: error.payload.code,
+            },
+          }
+        )
         return response.status(error.status).send(errorResponse(error.payload))
       }
       throw error
@@ -486,6 +595,51 @@ export default class AdminPreRegistrationsController {
 
     return response.ok(
       dataResponse(toPreRegistrationDto(row), { message: 'Pré-inscription refusée.' })
+    )
+  }
+
+  async auditEvents({ request, response }: HttpContext) {
+    const qs = request.qs()
+    const page = parsePositiveInt(qs.page, 1, { min: 1, max: 100_000 })
+    const limit = parsePositiveInt(qs.limit, 20, { min: 1, max: 100 })
+    const preRegistrationId = qs.preRegistrationId
+      ? parsePositiveInt(qs.preRegistrationId, 0, { min: 1, max: 100_000_000 })
+      : null
+
+    const countQuery = db.from('admin_audit_events')
+    if (preRegistrationId) {
+      countQuery.where('pre_registration_id', preRegistrationId)
+    }
+    const totalResult = await countQuery.count('* as total').first()
+    const total = Number(totalResult?.total ?? 0)
+
+    const rowsQuery = db
+      .from('admin_audit_events as audit')
+      .leftJoin('users as admin', 'admin.id', 'audit.admin_user_id')
+      .select(
+        'audit.id',
+        'audit.admin_user_id',
+        'admin.email as admin_email',
+        'audit.pre_registration_id',
+        'audit.action',
+        'audit.details',
+        'audit.created_at'
+      )
+
+    if (preRegistrationId) {
+      rowsQuery.where('audit.pre_registration_id', preRegistrationId)
+    }
+
+    const rows = (await rowsQuery
+      .orderBy('audit.created_at', 'desc')
+      .offset((page - 1) * limit)
+      .limit(limit)) as AdminAuditEventRow[]
+
+    return response.ok(
+      dataResponse(
+        rows.map((row) => toAdminAuditEventDto(row)),
+        { meta: { page, limit, total } }
+      )
     )
   }
 }

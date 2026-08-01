@@ -3,6 +3,7 @@ import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 import { dataResponse, errorResponse, parsePositiveInt } from '#services/http'
 import { getSignedUrlsByMediaIds } from '#services/media_assets'
+import { expireExpiredBookingDrafts } from '#services/booking_drafts'
 
 type ProviderRow = {
   id: number
@@ -11,6 +12,7 @@ type ProviderRow = {
   bio: string | null
   institute_address: string | null
   service_modes: string[] | null
+  home_service_zones: string[] | null
   price_from_cents: string | number | null
   currency: string
   rating_avg: string | number
@@ -162,6 +164,7 @@ export default class ProvidersController {
       priceFromCents: row.price_from_cents === null ? null : Number(row.price_from_cents),
       currency: row.currency ?? 'EUR',
       serviceModes: Array.isArray(row.service_modes) ? row.service_modes : [],
+      homeServiceZones: Array.isArray(row.home_service_zones) ? row.home_service_zones : [],
       instituteAddress: row.institute_address,
       tags: tagsByProvider.get(Number(row.id)) ?? [],
       nextSlots: slotsByProvider.get(Number(row.id)) ?? [],
@@ -174,6 +177,7 @@ export default class ProvidersController {
   }
 
   async featured({ request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const limit = parsePositiveInt(request.input('limit'), 4, { min: 1, max: 20 })
     const rows = (await db
       .from('provider_profiles as pp')
@@ -187,6 +191,7 @@ export default class ProvidersController {
         'pp.bio',
         'pp.institute_address',
         'pp.service_modes',
+        'pp.home_service_zones',
         'pp.price_from_cents',
         'pp.currency',
         'pp.rating_avg',
@@ -200,6 +205,7 @@ export default class ProvidersController {
   }
 
   async index({ request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const qs = request.qs()
     const page = parsePositiveInt(qs.page, 1, { min: 1, max: 100_000 })
     const limit = parsePositiveInt(qs.limit, 20, { min: 1, max: 100 })
@@ -234,6 +240,7 @@ export default class ProvidersController {
         'pp.bio',
         'pp.institute_address',
         'pp.service_modes',
+        'pp.home_service_zones',
         'pp.price_from_cents',
         'pp.currency',
         'pp.rating_avg',
@@ -250,6 +257,7 @@ export default class ProvidersController {
   }
 
   async show({ params, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const providerId = Number(params.providerId)
     if (!Number.isFinite(providerId) || providerId <= 0) {
       return response.badRequest(
@@ -271,6 +279,7 @@ export default class ProvidersController {
         'pp.bio',
         'pp.institute_address',
         'pp.service_modes',
+        'pp.home_service_zones',
         'pp.price_from_cents',
         'pp.currency',
         'pp.rating_avg',
@@ -382,6 +391,7 @@ export default class ProvidersController {
   }
 
   async availability({ params, request, response }: HttpContext) {
+    await expireExpiredBookingDrafts()
     const providerId = Number(params.providerId)
     const from = request.input('from')
     const to = request.input('to')

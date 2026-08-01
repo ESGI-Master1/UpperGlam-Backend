@@ -17,6 +17,12 @@ export default await Env.create(new URL('../', import.meta.url), {
   APP_KEY: Env.schema.string(),
   HOST: Env.schema.string({ format: 'host' }),
   LOG_LEVEL: Env.schema.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']),
+  OTEL_ENABLED: Env.schema.boolean.optional(),
+  OTEL_SERVICE_NAME: Env.schema.string.optional(),
+  OTEL_EXPORTER_OTLP_ENDPOINT: Env.schema.string.optional(),
+  POSTHOG_PROJECT_TOKEN: Env.schema.string.optional(),
+  POSTHOG_LOGS_ENDPOINT: Env.schema.string.optional(),
+  CORS_ALLOWED_ORIGINS: Env.schema.string.optional(),
 
   /*
   |----------------------------------------------------------
@@ -40,4 +46,11 @@ export default await Env.create(new URL('../', import.meta.url), {
   MINIO_SECRET_KEY: Env.schema.string.optional(),
   MINIO_BUCKET_USER_IMAGES: Env.schema.string.optional(),
   MINIO_REGION: Env.schema.string.optional(),
+  MOLLIE_API_KEY: Env.schema.string.optional(),
+  MOLLIE_REDIRECT_URL: Env.schema.string.optional(),
+  MOLLIE_WEBHOOK_URL: Env.schema.string.optional(),
+  MOLLIE_MOCK: Env.schema.boolean.optional(),
+  MOLLIE_MOCK_BASE_URL: Env.schema.string.optional(),
+  BOOKING_REFUND_CUTOFF_HOURS: Env.schema.number.optional(),
+  BOOKING_MODIFICATION_CUTOFF_HOURS: Env.schema.number.optional(),
 })

@@ -14,6 +14,7 @@ const AuthController = () => import('#controllers/auth_controller')
 const PreRegistrationsController = () =>
   import('#infrastructure/http/controllers/pre_registrations_controller')
 const ProvidersController = () => import('#controllers/providers_controller')
+const ProvidersMeController = () => import('#controllers/providers_me_controller')
 const BookingsController = () => import('#controllers/bookings_controller')
 const UsersController = () => import('#controllers/users_controller')
 const UploadsController = () => import('#controllers/uploads_controller')
@@ -26,19 +27,38 @@ router.get('/', async () => {
   }
 })
 
-router.post('/auth/register', [AuthController, 'register'])
-router.post('/auth/login', [AuthController, 'login'])
-router.post('/auth/forgot-password', [AuthController, 'forgotPassword'])
-router.post('/auth/reset-password', [AuthController, 'resetPassword'])
-router.post('/auth/reset-password-with-code', [AuthController, 'resetPasswordWithCode'])
-router.post('/pre-registration', [PreRegistrationsController, 'store'])
+router
+  .group(() => {
+    router.post('/auth/register', [AuthController, 'register'])
+    router.post('/auth/login', [AuthController, 'login'])
+  })
+  .use(middleware.rateLimit({ keyPrefix: 'auth', max: 10, windowMs: 60_000 }))
+
+router
+  .group(() => {
+    router.post('/auth/forgot-password', [AuthController, 'forgotPassword'])
+    router.post('/auth/reset-password', [AuthController, 'resetPassword'])
+    router.post('/auth/reset-password-with-code', [AuthController, 'resetPasswordWithCode'])
+  })
+  .use(middleware.rateLimit({ keyPrefix: 'password-reset', max: 5, windowMs: 60_000 }))
+
+router
+  .post('/pre-registration', [PreRegistrationsController, 'store'])
+  .use(middleware.rateLimit({ keyPrefix: 'pre-registration', max: 8, windowMs: 60_000 }))
+
+router
+  .post('/payments/webhooks/mollie', [BookingsController, 'mollieWebhook'])
+  .use(middleware.rateLimit({ keyPrefix: 'mollie-webhook', max: 120, windowMs: 60_000 }))
+
+router
+  .get('/payments/mock/:paymentId', [BookingsController, 'mollieMockCheckout'])
+  .use(middleware.rateLimit({ keyPrefix: 'mollie-mock', max: 60, windowMs: 60_000 }))
 
 router.get('/providers/tags', [ProvidersController, 'tags'])
 router.get('/providers/featured', [ProvidersController, 'featured'])
 router.get('/providers', [ProvidersController, 'index'])
 router.get('/providers/:providerId', [ProvidersController, 'show'])
 router.get('/providers/:providerId/reviews', [ProvidersController, 'reviews'])
-router.get('/providers/:providerId/availability', [ProvidersController, 'availability'])
 
 router
   .group(() => {
@@ -48,7 +68,9 @@ router
     router.post('/bookings/drafts', [BookingsController, 'createDraft'])
     router.get('/bookings/drafts/:draftId', [BookingsController, 'getDraft'])
     router.post('/bookings/drafts/:draftId/checkout', [BookingsController, 'checkoutDraft'])
-    router.post('/payments/intents', [BookingsController, 'createPaymentIntent'])
+    router
+      .post('/payments/intents', [BookingsController, 'createPaymentIntent'])
+      .use(middleware.rateLimit({ keyPrefix: 'payment-intent', max: 10, windowMs: 60_000 }))
     router.get('/bookings/me', [BookingsController, 'me'])
     router.get('/bookings/:bookingId', [BookingsController, 'show'])
     router.patch('/bookings/:bookingId', [BookingsController, 'update'])
@@ -64,6 +86,73 @@ router
     router.post('/uploads/presign', [UploadsController, 'presign'])
     router.post('/uploads/commit', [UploadsController, 'commit'])
     router.get('/media/:mediaId', [UploadsController, 'getMediaUrl'])
+
+    router
+      .group(() => {
+        router.get('/providers/me/dashboard', [ProvidersMeController, 'dashboard'])
+        router.get('/providers/me/profile', [ProvidersMeController, 'profile'])
+        router.patch('/providers/me/profile', [ProvidersMeController, 'updateProfile'])
+        router.get('/providers/me/bookings', [ProvidersMeController, 'bookings'])
+        router.post('/providers/me/bookings/:bookingId/accept', [
+          ProvidersMeController,
+          'acceptBooking',
+        ])
+        router.post('/providers/me/bookings/:bookingId/reject', [
+          ProvidersMeController,
+          'rejectBooking',
+        ])
+        router.post('/providers/me/bookings/:bookingId/propose-slot', [
+          ProvidersMeController,
+          'proposeBookingSlot',
+        ])
+        router.patch('/providers/me/bookings/:bookingId/status', [
+          ProvidersMeController,
+          'updateBookingStatus',
+        ])
+        router.get('/providers/me/availability', [ProvidersMeController, 'availability'])
+        router.post('/providers/me/availability', [ProvidersMeController, 'createAvailability'])
+        router.delete('/providers/me/availability/:slotId', [
+          ProvidersMeController,
+          'deleteAvailability',
+        ])
+        router.get('/providers/me/availability/rules', [ProvidersMeController, 'availabilityRules'])
+        router.post('/providers/me/availability/rules', [
+          ProvidersMeController,
+          'createAvailabilityRule',
+        ])
+        router.delete('/providers/me/availability/rules/:ruleId', [
+          ProvidersMeController,
+          'deleteAvailabilityRule',
+        ])
+        router.get('/providers/me/availability/closures', [
+          ProvidersMeController,
+          'availabilityClosures',
+        ])
+        router.post('/providers/me/availability/closures', [
+          ProvidersMeController,
+          'createAvailabilityClosure',
+        ])
+        router.delete('/providers/me/availability/closures/:closureId', [
+          ProvidersMeController,
+          'deleteAvailabilityClosure',
+        ])
+        router.get('/providers/me/services', [ProvidersMeController, 'services'])
+        router.post('/providers/me/services', [ProvidersMeController, 'createService'])
+        router.put('/providers/me/services/:serviceId', [ProvidersMeController, 'updateService'])
+        router.delete('/providers/me/services/:serviceId', [ProvidersMeController, 'deleteService'])
+        router.get('/providers/me/gallery', [ProvidersMeController, 'gallery'])
+        router.post('/providers/me/gallery', [ProvidersMeController, 'addGalleryItem'])
+        router.put('/providers/me/gallery/order', [ProvidersMeController, 'reorderGallery'])
+        router.delete('/providers/me/gallery/:itemId', [ProvidersMeController, 'deleteGalleryItem'])
+        router.get('/providers/me/customers', [ProvidersMeController, 'customers'])
+        router.put('/providers/me/customers/:customerUserId/note', [
+          ProvidersMeController,
+          'updateCustomerNote',
+        ])
+        router.get('/providers/me/revenue', [ProvidersMeController, 'revenue'])
+        router.get('/providers/me/export.csv', [ProvidersMeController, 'exportCsv'])
+      })
+      .use(middleware.provider())
   })
   .use(
     middleware.auth({
@@ -71,8 +160,13 @@ router
     })
   )
 
+// Keep this dynamic public route after the static `/providers/me/availability` route.
+// Otherwise Adonis interprets "me" as a providerId and the provider agenda returns HTTP 400.
+router.get('/providers/:providerId/availability', [ProvidersController, 'availability'])
+
 router
   .group(() => {
+    router.get('/admin/audit-events', [AdminPreRegistrationsController, 'auditEvents'])
     router.get('/admin/pre-registrations', [AdminPreRegistrationsController, 'index'])
     router.get('/admin/pre-registrations/:preRegistrationId', [
       AdminPreRegistrationsController,
