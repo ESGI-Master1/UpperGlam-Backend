@@ -21,6 +21,7 @@ const UploadsController = () => import('#controllers/uploads_controller')
 const AdminPreRegistrationsController = () =>
   import('#controllers/admin_pre_registrations_controller')
 const AdminManagementController = () => import('#controllers/admin_management_controller')
+const SeoController = () => import('#controllers/seo_controller')
 
 router.get('/', async () => {
   return {
@@ -60,6 +61,9 @@ router.get('/providers/featured', [ProvidersController, 'featured'])
 router.get('/providers', [ProvidersController, 'index'])
 router.get('/providers/:providerId', [ProvidersController, 'show'])
 router.get('/providers/:providerId/reviews', [ProvidersController, 'reviews'])
+router
+  .get('/seo/catalog', [SeoController, 'catalog'])
+  .use(middleware.rateLimit({ keyPrefix: 'seo-catalog', max: 60, windowMs: 60_000 }))
 
 router
   .group(() => {

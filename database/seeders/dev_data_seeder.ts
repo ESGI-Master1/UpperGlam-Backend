@@ -187,6 +187,16 @@ export default class extends BaseSeeder {
       { slug: 'coloration', label: 'Coloration' },
       { slug: 'domicile', label: 'A domicile' },
     ]
+    const serviceCatalog = [
+      { name: 'Coupe et brushing', category: 'Coiffure', duration: 60 },
+      { name: 'Maquillage événement', category: 'Maquillage', duration: 75 },
+      { name: 'Manucure et pose de vernis', category: 'Onglerie', duration: 60 },
+      { name: 'Soin du visage', category: 'Soins visage', duration: 50 },
+      { name: 'Beauté du regard', category: 'Cils et sourcils', duration: 60 },
+      { name: 'Massage esthétique', category: 'Massage', duration: 60 },
+      { name: 'Épilation', category: 'Épilation', duration: 45 },
+      { name: 'Préparation beauté mariage', category: 'Mariage', duration: 120 },
+    ]
 
     const seedUsers: SeedUser[] = []
     for (let i = 0; i < CUSTOMER_COUNT; i++) {
@@ -367,6 +377,21 @@ export default class extends BaseSeeder {
       }
     }
     await db.table('provider_profile_tags').insert(providerTagRows)
+
+    await db.table('provider_services').insert(
+      providerSeeds.flatMap((providerSeed) =>
+        pickMany(serviceCatalog, randomInt(2, 4)).map((service, index) => ({
+          provider_profile_id: providerSeed.profileId!,
+          name: service.name,
+          category: service.category,
+          duration_minutes: service.duration,
+          price_cents: providerSeed.priceFromCents + index * 1_000,
+          is_active: true,
+          created_at: now,
+          updated_at: now,
+        }))
+      )
+    )
 
     const mediaBucket = 'upperglam-user-images'
     const avatarMediaRows = providerSeeds.map((providerSeed) => ({
