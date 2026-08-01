@@ -8,6 +8,8 @@ export type AdminAuditAction =
   | 'admin.pre_registration.approved'
   | 'admin.pre_registration.rejected'
   | 'admin.pre_registration.action_failed'
+  | 'admin.user.status_updated'
+  | 'admin.provider.updated'
 
 export type AdminAuditEventInput = {
   action: AdminAuditAction
